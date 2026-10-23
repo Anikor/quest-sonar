@@ -57,15 +57,10 @@ public class DepthPointCloud : MonoBehaviour
 
     IEnumerator Start()
     {
-        float t = 0;
-        while ((FindFirstObjectByType<OVRCameraRig>() == null || ObstacleMap.Instance == null) && t < 15f)
-        {
-            t += Time.deltaTime;
-            yield return null;
-        }
+        yield return SonarCommon.WaitUntilReady(() => ObstacleMap.Instance != null);
 
-        var rig = FindFirstObjectByType<OVRCameraRig>();
-        if (rig != null) cam = rig.centerEyeAnchor.GetComponent<Camera>();
+        var head = SonarCommon.FindHead();
+        if (head != null) cam = head.GetComponent<Camera>();
         if (cam == null) cam = Camera.main;
         if (cam != null) { origFlags = cam.clearFlags; origBg = cam.backgroundColor; }
 
@@ -117,7 +112,7 @@ public class DepthPointCloud : MonoBehaviour
         psRenderer = go.GetComponent<ParticleSystemRenderer>();
         psRenderer.renderMode = ParticleSystemRenderMode.Billboard;
         psRenderer.sortMode = ParticleSystemSortMode.None;
-        psRenderer.material = new Material(Shader.Find("Sprites/Default"));
+        psRenderer.material = SonarCommon.NewSpriteMaterial();
         psRenderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
         psRenderer.receiveShadows = false;
 

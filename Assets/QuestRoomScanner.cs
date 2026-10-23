@@ -29,16 +29,9 @@ public class QuestRoomScanner : MonoBehaviour
 
     IEnumerator Start()
     {
-        float t = 0;
-        while ((FindFirstObjectByType<OVRCameraRig>() == null || ObstacleMap.Instance == null) && t < 15f)
-        {
-            t += Time.deltaTime;
-            yield return null;
-        }
+        yield return SonarCommon.WaitUntilReady(() => ObstacleMap.Instance != null);
 
-        var rig = FindFirstObjectByType<OVRCameraRig>();
-        if (rig != null) head = rig.centerEyeAnchor;
-        else if (Camera.main != null) head = Camera.main.transform;
+        head = SonarCommon.FindHead();
 
         if (showHud && head != null) CreateHud();
     }
@@ -74,7 +67,6 @@ public class QuestRoomScanner : MonoBehaviour
         foreach (var kv in map.statusCounts) sb.Append(kv.Key).Append('=').Append(kv.Value).Append(' ');
         hud.text = sb.ToString();
 
-        hud.color = map.nearestDistance >= 0 && map.nearestDistance < map.dangerDistance ? Color.red
-                  : map.nearestDistance >= 0 && map.nearestDistance < map.warnDistance ? Color.yellow : Color.white;
+        hud.color = map.LevelColor();
     }
 }
