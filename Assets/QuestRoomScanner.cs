@@ -4,8 +4,9 @@ using UnityEngine;
 
 /// <summary>
 /// Панель статуса (HUD) для диагностики ObstacleMap. Без MRUK и без своих лучей.
-/// Показывает: частоту кадров скана, лучи (попадания/всего), лучей в секунду,
-/// статусы лучей (почему нет попаданий), высоту пола, ближайшее препятствие.
+/// Показывает: частоту кадров скана, лучи или точки (попадания/всего) и их число в секунду,
+/// статусы лучей (почему нет попаданий), высоту пола, ближайшее препятствие,
+/// источник глубины и состояние DepthSampler (точек в кадре, скорость, ошибка самопроверки).
 /// Скрипт создаётся сам при старте сцены.
 /// </summary>
 public class QuestRoomScanner : MonoBehaviour
@@ -63,10 +64,22 @@ public class QuestRoomScanner : MonoBehaviour
         var sb = new StringBuilder();
         sb.AppendLine(map.nearestDistance >= 0 ? $"Препятствие: {map.nearestDistance:F1} м" : "Препятствие: нет");
         sb.AppendLine($"Пол: y={map.floorY:F2}  клеток: {map.occupiedCount}");
-        sb.Append($"Скан: {fps:F0}/с  лучи {map.lastHits}/{map.lastRays}  {map.raysPerSecond:F0} лучей/с  {map.scanMs:F1} мс  ");
+        sb.Append($"Скан: {fps:F0}/с  {map.SourceLabel} {map.lastHits}/{map.lastRays}  {map.raysPerSecond:F0}/с  {map.scanMs:F1} мс  ");
         foreach (var kv in map.statusCounts) sb.Append(kv.Key).Append('=').Append(kv.Value).Append(' ');
+        sb.Append('\n').Append(DepthLine(map));
         hud.text = sb.ToString();
 
         hud.color = map.LevelColor();
+    }
+
+    /// <summary>Строка про источник глубины: режим карты и состояние DepthSampler (точки, скорость, ошибка самопроверки).</summary>
+    static string DepthLine(ObstacleMap map)
+    {
+        string src = map.activeSource == ObstacleMap.DepthSource.Texture ? "текстура" : "лучи";
+        var ds = DepthSampler.Instance;
+        if (ds == null) return $"Глубина: {src}  шейдер: нет";
+        if (!ds.ready) return $"Глубина: {src}  шейдер: {ds.status}";
+        string err = ds.calibErrorMedian >= 0f ? (ds.calibErrorMedian * 100f).ToString("F1") + " см" : "-";
+        return $"Глубина: {src}  шейдер: {ds.validCount} т.  {ds.pointsPerSecond / 1000f:F0}k/с  ошибка {err}";
     }
 }
