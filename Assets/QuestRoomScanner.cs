@@ -5,7 +5,7 @@ using UnityEngine;
 /// <summary>
 /// Панель статуса (HUD) для диагностики ObstacleMap. Без MRUK и без своих лучей.
 /// Показывает: частоту кадров скана, лучи (попадания/всего), лучей в секунду,
-/// статусы лучей (почему нет попаданий), высоту пола, ближайшее препятствие.
+/// статусы лучей (почему нет попаданий), высоту пола, ближайшее препятствие, зоны прохода и ближайший проём.
 /// Скрипт создаётся сам при старте сцены.
 /// </summary>
 public class QuestRoomScanner : MonoBehaviour
@@ -63,6 +63,7 @@ public class QuestRoomScanner : MonoBehaviour
         var sb = new StringBuilder();
         sb.AppendLine(map.nearestDistance >= 0 ? $"Препятствие: {map.nearestDistance:F1} м" : "Препятствие: нет");
         sb.AppendLine($"Пол: y={map.floorY:F2}  клеток: {map.occupiedCount}");
+        sb.AppendLine(map.ZonesText());
         sb.Append($"Скан: {fps:F0}/с  лучи {map.lastHits}/{map.lastRays}  {map.raysPerSecond:F0} лучей/с  {map.scanMs:F1} мс  ");
         foreach (var kv in map.statusCounts) sb.Append(kv.Key).Append('=').Append(kv.Value).Append(' ');
         var ds = DepthSampler.Instance;
