@@ -2,12 +2,14 @@
 //
 // Kernel Sample / Sample2D: сетка _GridW x _GridH точек из слоя _Slice текстуры -> мировые точки
 //   в кольцевой буфер _Points по смещению _BaseIndex. Точка: xyz = мир, w = расстояние от головы (0 = нет данных).
+//   Фильтр границ (_EdgeFilter): "летящие" пиксели на границах предметов (промежуточная глубина, которой нет
+//   ни у предмета, ни у фона) отбрасываются: точка остаётся, если хотя бы 2 из 4 соседей близки к ней по глубине.
 // Kernel BuildQuads: для всех точек кольцевого буфера строит квады (4 вершины по 20 байт: позиция float3,
 //   цвет RGBA8, uv half2) прямо в вершинный буфер меша (DepthPointCloud). Цвет = высота над полом,
 //   прозрачность = возраст кадра.
 //
 // Математика восстановления (по исходникам Meta: EnvironmentDepthUtils.cs, EnvironmentOcclusion.cginc,
-// MRUK EnvironmentDepthRaycaster):
+// MRUK EnvironmentDepthRaycaster; одинакова в SDK 85, 201 и 207):
 //   _EnvironmentDepthReprojectionMatrices[eye] переводит МИРОВУЮ точку в clip-пространство камеры глубины
 //   (проекция в стиле OpenGL), uv = (clip.xy / clip.w + 1) / 2 без переворота Y, NDC-z = raw * 2 - 1,
 //   линейная глубина = ZB.x / (ndcZ + ZB.y). Значит мир = inverse(VP) * (uv * 2 - 1, raw * 2 - 1, 1)
@@ -32,6 +34,9 @@ int      _FlipY;
 int      _BaseIndex;    // смещение текущего слота в кольцевом буфере
 float2   _Jitter;       // сдвиг сетки внутри ячейки (0..1), меняется каждый кадр
 float    _MinDist, _MaxDist;
+int      _EdgeFilter;   // 1 = отбрасывать "летящие" пиксели на границах
+float    _EdgeRelTol;   // допуск близости соседей как доля глубины
+float    _EdgeMinTol;   // допуск близости соседей, не меньше этого (м)
 
 int2 PixelOf(uint2 id)
 {
@@ -39,7 +44,30 @@ int2 PixelOf(uint2 id)
     return clamp(int2(uv * float2(_DepthW, _DepthH)), int2(0, 0), int2(_DepthW - 1, _DepthH - 1));
 }
 
-void WritePoint(uint2 id, int2 px, float raw)
+int2 ClampPx(int2 px)
+{
+    return clamp(px, int2(0, 0), int2(_DepthW - 1, _DepthH - 1));
+}
+
+float LinearOf(float raw)
+{
+    return _ZB.x / (raw * 2.0 - 1.0 + _ZB.y);      // метры вдоль оси камеры глубины (формула Meta)
+}
+
+bool NeighborsAgree(float linearDepth, float4 nraw)
+{
+    float tol = max(_EdgeMinTol, _EdgeRelTol * linearDepth);
+    int agree = 0;
+    [unroll]
+    for (int i = 0; i < 4; i++)
+    {
+        float r = nraw[i];
+        if (r > 0.0 && r < 1.0 && abs(LinearOf(r) - linearDepth) <= tol) agree++;
+    }
+    return agree >= 2;
+}
+
+void WritePoint(uint2 id, int2 px, float raw, float4 nraw)
 {
     uint idx = (uint)_BaseIndex + id.y * (uint)_GridW + id.x;
 
@@ -50,13 +78,14 @@ void WritePoint(uint2 id, int2 px, float raw)
     float4 h = mul(_InvVP, float4(uvc * 2.0 - 1.0, ndcZ, 1.0));
     float3 p = h.xyz / h.w;
 
-    float linearDepth = _ZB.x / (ndcZ + _ZB.y);      // метры вдоль оси камеры глубины (формула Meta)
+    float linearDepth = LinearOf(raw);
     float dist = distance(p, _HeadPos.xyz);
 
     bool ok = raw > 0.0 && raw < 1.0 && abs(h.w) > 1e-6
               && linearDepth > 0.0 && linearDepth < _MaxDist * 1.5
               && all(isfinite(p))
-              && dist > _MinDist && dist < _MaxDist;
+              && dist > _MinDist && dist < _MaxDist
+              && (_EdgeFilter == 0 || NeighborsAgree(linearDepth, nraw));
 
     _Points[idx] = ok ? float4(p, dist) : float4(0, 0, 0, 0);
 }
@@ -66,7 +95,12 @@ void Sample(uint3 id : SV_DispatchThreadID)
 {
     if (id.x >= (uint)_GridW || id.y >= (uint)_GridH) return;
     int2 px = PixelOf(id.xy);
-    WritePoint(id.xy, px, _Depth.Load(int4(px, _Slice, 0)));
+    float4 n = float4(
+        _Depth.Load(int4(ClampPx(px + int2( 1,  0)), _Slice, 0)),
+        _Depth.Load(int4(ClampPx(px + int2(-1,  0)), _Slice, 0)),
+        _Depth.Load(int4(ClampPx(px + int2( 0,  1)), _Slice, 0)),
+        _Depth.Load(int4(ClampPx(px + int2( 0, -1)), _Slice, 0)));
+    WritePoint(id.xy, px, _Depth.Load(int4(px, _Slice, 0)), n);
 }
 
 [numthreads(8, 8, 1)]
@@ -74,7 +108,12 @@ void Sample2D(uint3 id : SV_DispatchThreadID)
 {
     if (id.x >= (uint)_GridW || id.y >= (uint)_GridH) return;
     int2 px = PixelOf(id.xy);
-    WritePoint(id.xy, px, _Depth2D.Load(int3(px, 0)));
+    float4 n = float4(
+        _Depth2D.Load(int3(ClampPx(px + int2( 1,  0)), 0)),
+        _Depth2D.Load(int3(ClampPx(px + int2(-1,  0)), 0)),
+        _Depth2D.Load(int3(ClampPx(px + int2( 0,  1)), 0)),
+        _Depth2D.Load(int3(ClampPx(px + int2( 0, -1)), 0)));
+    WritePoint(id.xy, px, _Depth2D.Load(int3(px, 0)), n);
 }
 
 // ---------------------------------------------------------------- BuildQuads

@@ -12,6 +12,12 @@ using UnityEngine.Rendering;
 ///  - кольцевой GPU-буфер PointsBuffer на historyFrames кадров: из него DepthPointCloud рисует десятки тысяч точек;
 ///  - копия последнего кадра на CPU (Points, задержка 1-3 кадра): по ней ObstacleMap строит карту, а AudioSonar звучит.
 /// Каждая точка: xyz = мир, w = расстояние от головы (0 = нет данных).
+///
+/// Чтение идёт в Application.onBeforeRender сразу после EnvironmentDepthManager: текстура и матрицы берутся в том же
+/// кадре, в котором их выставил Meta (так делают и шейдеры окклюзии Meta). Текстура - образ из swapchain рантайма,
+/// который перезаписывается каждым новым кадром глубины: если читать её на кадр позже (в Update), образ может уже
+/// содержать глубину под новую позу, а матрицы останутся старыми, и точки "уезжают" при движении головы.
+///
 /// Самопроверка: случайные точки сравниваются с EnvironmentRaycastManager.Raycast (calibErrorMedian, м).
 /// Скрипт создаётся сам при старте сцены. Если глубина недоступна, ready = false и карта остаётся на лучах (как в v1).
 /// </summary>
@@ -21,10 +27,10 @@ public class DepthSampler : MonoBehaviour
 
     [Header("Сетка точек за кадр (менять до старта)")]
     [Tooltip("Точек по горизонтали в кадр. Текстура глубины квадратная, поэтому сетка тоже")]
-    public int gridW = 112;
-    public int gridH = 112;
+    public int gridW = 96;
+    public int gridH = 96;
     [Tooltip("Сколько кадров хранится в GPU-буфере для отрисовки облака")]
-    public int historyFrames = 8;
+    public int historyFrames = 6;
 
     [Header("Чтение")]
     [Tooltip("Читать оба глаза по очереди (чуть шире покрытие)")]
@@ -36,11 +42,21 @@ public class DepthSampler : MonoBehaviour
     [Tooltip("Убирать руки из текстуры глубины (иначе они дают близкие точки)")]
     public bool removeHands = true;
 
+    [Header("Фильтр границ")]
+    [Tooltip("Отбрасывать 'летящие' пиксели на границах предметов: точка остаётся, если хотя бы 2 из 4 соседей близки к ней по глубине")]
+    public bool edgeFilter = true;
+    [Tooltip("Допуск близости соседей как доля глубины")]
+    public float edgeRelTol = 0.04f;
+    [Tooltip("Допуск близости соседей, не меньше этого (м)")]
+    public float edgeMinTol = 0.04f;
+
     [Header("Отладка (переключать в Play-режиме, если самопроверка даёт большую ошибку)")]
     [Tooltip("Перевернуть текстуру по вертикали. По исходникам Meta не нужно, оставлено на случай другой версии SDK")]
     public bool flipY = false;
     [Tooltip("Привязать к шейдеру именно depth-часть RenderTexture (если по умолчанию читаются нули)")]
     public bool bindDepthElement = false;
+    [Tooltip("Читать в Update, как в v2.0 (на кадр позже менеджера Meta) - только для сравнения")]
+    public bool sampleInUpdate = false;
 
     [Header("Самопроверка относительно Raycast")]
     public bool calibrate = true;
@@ -88,7 +104,7 @@ public class DepthSampler : MonoBehaviour
     readonly List<Matrix4x4> matrices = new();
     readonly List<float> errors = new();
     Texture lastTex;
-    bool readbackSupported, readbackBusy, warnedDimension;
+    bool readbackSupported, readbackBusy, warnedDimension, subscribed;
     int frame, pointsThisSecond;
     float rateTimer, calibTimer, logTimer;
 
@@ -144,9 +160,13 @@ public class DepthSampler : MonoBehaviour
         if (!readbackSupported)
             Debug.LogWarning("DepthSampler: AsyncGPUReadback не поддерживается, точек на CPU (карта, звук) не будет, только облако.");
 
+        // подписываемся после EnvironmentDepthManager (он подписан с момента своего OnEnable), порядок 1000 - для надёжности
+        Application.onBeforeRender += OnBeforeRender;
+        subscribed = true;
+
         ready = true;
         status = "работает";
-        Debug.Log($"DepthSampler: готов, сетка {gridW}x{gridH}, история {History} кадров.");
+        Debug.Log($"DepthSampler: готов, сетка {gridW}x{gridH}, история {History} кадров, чтение в onBeforeRender.");
     }
 
     void Fail(string why)
@@ -158,6 +178,7 @@ public class DepthSampler : MonoBehaviour
 
     void OnDestroy()
     {
+        if (subscribed) Application.onBeforeRender -= OnBeforeRender;
         PointsBuffer?.Release();
         PointsBuffer = null;
         if (Instance == this) Instance = null;
@@ -166,7 +187,30 @@ public class DepthSampler : MonoBehaviour
     // ---------------------------------------------------------------- главный цикл
     void Update()
     {
-        if (!ready || head == null) return;
+        if (!ready) return;
+
+        if (sampleInUpdate) SampleFrame();
+
+        rateTimer += Time.unscaledDeltaTime;
+        if (rateTimer >= 1f)
+        {
+            pointsPerSecond = pointsThisSecond / rateTimer;
+            pointsThisSecond = 0;
+            rateTimer = 0f;
+        }
+    }
+
+    [BeforeRenderOrder(1000)]   // после EnvironmentDepthManager (у него порядок по умолчанию, 0)
+    void OnBeforeRender()
+    {
+        if (!ready || sampleInUpdate || !isActiveAndEnabled) return;
+        SampleFrame();
+    }
+
+    /// <summary>Один кадр: взять текстуру и матрицы Meta, запустить kernel Sample в текущий слот кольца, заказать readback.</summary>
+    void SampleFrame()
+    {
+        if (head == null || cs == null) return;
 
         var tex = Shader.GetGlobalTexture(DepthTexId);
         if (tex == null) { status = "нет текстуры"; return; }
@@ -192,9 +236,10 @@ public class DepthSampler : MonoBehaviour
 
         if (tex != lastTex)
         {
+            if (lastTex == null)
+                Debug.Log("DepthSampler: текстура глубины " + Describe(tex) + ", матриц " + matrices.Count);
             lastTex = tex;
             textureInfo = Describe(tex);
-            Debug.Log("DepthSampler: текстура глубины " + textureInfo + ", матриц " + matrices.Count);
         }
 
         frame++;
@@ -217,6 +262,9 @@ public class DepthSampler : MonoBehaviour
         cs.SetVector("_Jitter", new Vector2(Halton(frame, 2), Halton(frame, 3)));
         cs.SetFloat("_MinDist", minDistance);
         cs.SetFloat("_MaxDist", maxDistance);
+        cs.SetInt("_EdgeFilter", edgeFilter ? 1 : 0);
+        cs.SetFloat("_EdgeRelTol", edgeRelTol);
+        cs.SetFloat("_EdgeMinTol", edgeMinTol);
         cs.Dispatch(kernel, Mathf.CeilToInt(gridW / 8f), Mathf.CeilToInt(gridH / 8f), 1);
 
         if (readbackSupported && !readbackBusy)
@@ -226,13 +274,6 @@ public class DepthSampler : MonoBehaviour
         }
 
         status = "работает";
-        rateTimer += Time.unscaledDeltaTime;
-        if (rateTimer >= 1f)
-        {
-            pointsPerSecond = pointsThisSecond / rateTimer;
-            pointsThisSecond = 0;
-            rateTimer = 0f;
-        }
     }
 
     /// <summary>
@@ -316,7 +357,7 @@ public class DepthSampler : MonoBehaviour
             logTimer = 0f;
             string err = calibErrorMedian >= 0f ? (calibErrorMedian * 100f).ToString("F1") + " см" : "-";
             Debug.Log($"DepthSampler: точек {validCount}/{SlotSize}, {pointsPerSecond:F0}/с, медианная ошибка vs Raycast {err} " +
-                      $"(flipY={flipY}, alternateEyes={alternateEyes}, eye={eye}, bindDepthElement={bindDepthElement})");
+                      $"(flipY={flipY}, alternateEyes={alternateEyes}, eye={eye}, bindDepthElement={bindDepthElement}, edgeFilter={edgeFilter}, sampleInUpdate={sampleInUpdate})");
         }
     }
 

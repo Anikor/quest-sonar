@@ -7,7 +7,8 @@ using UnityEngine.Rendering;
 // Только для временного проекта проверки. Запускает compute-шейдер DepthSample на реальном GPU редактора:
 //  1) синтетическая текстура глубины (2 слоя) по формулам Meta с известной позой камеры -> kernel Sample ->
 //     точки сравниваются с геометрической истиной (без использования обратной матрицы);
-//  2) kernel BuildQuads пишет квады в вершинный буфер меша, созданного как в DepthPointCloud -> проверка вершин.
+//  2) фильтр границ: одиночные выбросы глубины должны отбрасываться, гладкая поверхность - оставаться;
+//  3) kernel BuildQuads пишет квады в вершинный буфер меша, созданного как в DepthPointCloud -> проверка вершин.
 // Ошибки HLSL сделают результат неверным (и попадут в лог как "Shader error"), ошибки C# ломают -executeMethod сами.
 public static class CompileCheck
 {
@@ -60,7 +61,9 @@ public static class CompileCheck
     static Vector4 ZB => new Vector4(-2f * Near, -1f, 0f, 0f);
 
     static float RawFromLinear(float L) { float ndc = ZB.x / L - ZB.y; return ndc * 0.5f + 0.5f; }
-    static float LinearAt(int px, int py) => 1.2f + 0.7f * Mathf.Sin(px * 0.21f) * Mathf.Cos(py * 0.17f) + 0.01f * px;   // 0.5 .. 2.6 м
+    // гладкое поле глубин 0.9 .. 2.1 м, соседние пиксели отличаются не больше чем на ~1.5 см
+    static float LinearAt(int px, int py) => 1.5f + 0.3f * Mathf.Sin(px * 0.05f) * Mathf.Cos(py * 0.04f) + 0.004f * px;
+    static bool IsOutlier(int px, int py) => (px * 7 + py * 13) % 50 == 0 && px > 1 && py > 1 && px < W - 2 && py < W - 2;
 
     // Геометрическая истина: точка на луче пикселя на линейной глубине L (камера смотрит вдоль +forward своего поворота)
     static Vector3 Truth(int px, int py, float L)
@@ -74,11 +77,18 @@ public static class CompileCheck
         int fails = 0;
         int n = W * W;
 
-        // текстура глубины: слой 0 = "нет глубины" (raw 1), слой 1 = данные
+        // текстура глубины: слой 0 = "нет глубины" (raw 1), слой 1 = гладкое поле с одиночными выбросами (+1 м)
         var tex = new Texture2DArray(W, W, 2, TextureFormat.RFloat, false, true);
         var s0 = new float[n]; var s1 = new float[n];
+        int outliers = 0;
         for (int y = 0; y < W; y++)
-            for (int x = 0; x < W; x++) { s0[y * W + x] = 1f; s1[y * W + x] = RawFromLinear(LinearAt(x, y)); }
+            for (int x = 0; x < W; x++)
+            {
+                s0[y * W + x] = 1f;
+                float L = LinearAt(x, y);
+                if (IsOutlier(x, y)) { L += 1f; outliers++; }
+                s1[y * W + x] = RawFromLinear(L);
+            }
         tex.SetPixelData(s0, 0, 0);
         tex.SetPixelData(s1, 0, 1);
         tex.Apply(false, false);
@@ -101,8 +111,12 @@ public static class CompileCheck
         cs.SetVector("_Jitter", new Vector2(0.5f, 0.5f));   // центр ячейки: сетка = текстура, пиксель = id
         cs.SetFloat("_MinDist", 0.2f);
         cs.SetFloat("_MaxDist", 6f);
+        cs.SetInt("_EdgeFilter", 0);
+        cs.SetFloat("_EdgeRelTol", 0.04f);
+        cs.SetFloat("_EdgeMinTol", 0.04f);
         cs.Dispatch(k, W / 8, W / 8, 1);
 
+        // 1) без фильтра: все точки (включая выбросы) восстанавливаются точно
         var res = new Vector4[n];
         points.GetData(res);
         int valid = 0; float maxErr = 0f, maxDistErr = 0f;
@@ -112,7 +126,8 @@ public static class CompileCheck
                 var r = res[y * W + x];
                 if (r.w <= 0f) { fails++; if (fails <= 5) Debug.LogError($"COMPILECHECK: point {x},{y} invalid (w=0)"); continue; }
                 valid++;
-                var t = Truth(x, y, LinearAt(x, y));
+                float L = LinearAt(x, y) + (IsOutlier(x, y) ? 1f : 0f);
+                var t = Truth(x, y, L);
                 float e = Vector3.Distance(new Vector3(r.x, r.y, r.z), t);
                 float de = Mathf.Abs(r.w - Vector3.Distance(t, CamPos));
                 maxErr = Mathf.Max(maxErr, e);
@@ -120,12 +135,29 @@ public static class CompileCheck
                 if (e > 2e-3f || de > 2e-3f)
                 {
                     fails++;
-                    if (fails <= 5) Debug.LogError($"COMPILECHECK: point {x},{y} got {r:F4} expected {t:F4} (L={LinearAt(x, y):F3}) err {e:E2} distErr {de:E2}");
+                    if (fails <= 5) Debug.LogError($"COMPILECHECK: point {x},{y} got {r:F4} expected {t:F4} (L={L:F3}) err {e:E2} distErr {de:E2}");
                 }
             }
-        Debug.Log($"COMPILECHECK: Sample slice1 valid={valid}/{n} maxErr={maxErr:E2} m maxDistErr={maxDistErr:E2} m");
+        Debug.Log($"COMPILECHECK: Sample slice1 (no filter) valid={valid}/{n} maxErr={maxErr:E2} m maxDistErr={maxDistErr:E2} m");
 
-        // слой 0 (raw = 1 = нет глубины) не должен давать точек
+        // 2) фильтр границ: выбросы отбрасываются, гладкая поверхность остаётся
+        cs.SetInt("_EdgeFilter", 1);
+        cs.Dispatch(k, W / 8, W / 8, 1);
+        points.GetData(res);
+        int outliersKept = 0, smoothLost = 0, smoothTotal = 0;
+        for (int y = 0; y < W; y++)
+            for (int x = 0; x < W; x++)
+            {
+                bool has = res[y * W + x].w > 0f;
+                if (IsOutlier(x, y)) { if (has) outliersKept++; }
+                else { smoothTotal++; if (!has) smoothLost++; }
+            }
+        Debug.Log($"COMPILECHECK: edge filter: outliers {outliers}, kept {outliersKept}; smooth lost {smoothLost}/{smoothTotal}");
+        if (outliersKept > 0) { fails++; Debug.LogError("COMPILECHECK: edge filter kept outliers"); }
+        if (smoothLost > smoothTotal / 50) { fails++; Debug.LogError("COMPILECHECK: edge filter dropped too many smooth points"); }
+        cs.SetInt("_EdgeFilter", 0);
+
+        // 3) слой 0 (raw = 1 = нет глубины) не должен давать точек
         cs.SetInt("_Slice", 0);
         cs.Dispatch(k, W / 8, W / 8, 1);
         points.GetData(res);
@@ -133,7 +165,7 @@ public static class CompileCheck
         if (bad > 0) { fails++; Debug.LogError($"COMPILECHECK: slice 0 (raw=1) produced {bad} points, expected 0"); }
         else Debug.Log("COMPILECHECK: Sample slice0 (no depth) -> 0 points OK");
 
-        // переворот Y: точки должны отличаться от истины (проверка, что флаг вообще действует)
+        // 4) переворот Y: точки должны отличаться от истины (проверка, что флаг вообще действует)
         cs.SetInt("_Slice", 1); cs.SetInt("_FlipY", 1);
         cs.Dispatch(k, W / 8, W / 8, 1);
         points.GetData(res);
@@ -147,7 +179,7 @@ public static class CompileCheck
         cs.Dispatch(k, W / 8, W / 8, 1);
         points.GetData(res);
 
-        // BuildQuads в вершинный буфер меша, как в DepthPointCloud
+        // 5) BuildQuads в вершинный буфер меша, как в DepthPointCloud
         var mesh = new Mesh { name = "test", indexFormat = IndexFormat.UInt32 };
         mesh.SetVertexBufferParams(n * 4,
             new VertexAttributeDescriptor(VertexAttribute.Position, VertexAttributeFormat.Float32, 3),

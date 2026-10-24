@@ -39,8 +39,10 @@ public class DepthPointCloud : MonoBehaviour
     public float pointLifetime = 2.5f;
     [Tooltip("Частицы: сколько точек в кадр. maxEmitPerFrame * FPS * pointLifetime не должно сильно превышать maxPoints")]
     public int maxEmitPerFrame = 120;
-    [Tooltip("Размер точки, м (и для частиц, и для GPU-облака)")]
+    [Tooltip("Частицы: размер точки, м")]
     public float pointSize = 0.025f;
+    [Tooltip("GPU-облако: размер точки, м. Точек в десятки раз больше, чем частиц, поэтому меньше: иначе GPU тонет в заливке полупрозрачными квадами и кадры пропускаются")]
+    public float gpuPointSize = 0.012f;
     public float colorHeightRange = 2.5f;
     [Tooltip("GPU-облако: прозрачность самого старого кадра истории (свежий кадр = 1)")]
     [Range(0f, 1f)] public float minAlpha = 0.25f;
@@ -282,7 +284,7 @@ public class DepthPointCloud : MonoBehaviour
         {
             var ds = DepthSampler.Instance;
             if (ds != null && ds.ready)
-                ds.BuildQuads(cloudVerts, cam.transform.right, cam.transform.up, pointSize, map.floorY, colorHeightRange, minAlpha);
+                ds.BuildQuads(cloudVerts, cam.transform.right, cam.transform.up, gpuPointSize, map.floorY, colorHeightRange, minAlpha);
         }
     }
 

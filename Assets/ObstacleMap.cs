@@ -17,7 +17,8 @@ using UnityEngine;
 ///     Попадание в пол = проходимо. Потолок игнорируется.
 ///  3) Вдоль луча до точки попадания клетки "очищаются" (-log-odds): исчезнувшие предметы стираются.
 ///  4) Высота разбита на 3 слоя, чтобы луч над низким предметом не стирал его.
-///  5) Высота пола учится по лучам вниз.
+///  5) Высота пола учится по точкам/лучам вниз: берётся нижний 5-й процентиль высоты за кадр (устойчиво к выбросам,
+///     которых среди тысяч точек из текстуры всегда несколько), а не минимум.
 ///  6) Минимап (вверх = направление взгляда) + плитки на полу + API для звука/вибрации.
 /// Скрипт создаётся сам при старте сцены.
 /// </summary>
@@ -123,9 +124,17 @@ public class ObstacleMap : MonoBehaviour
 
     class Cell { public float[] l = new float[Layers]; }
 
+    // пол: гистограмма высот точек, полученных под углом вниз, за кадр; кандидат = нижний FloorPercentile
+    const int FloorBins = 64;
+    const float FloorBin = 0.025f;          // ширина корзины, м
+    const float FloorSearchTop = 0.8f;      // пол ищем от 0.8 до 0.8 + 64*0.025 = 2.4 м ниже головы
+    const float FloorPercentile = 0.05f;
+    readonly int[] floorHist = new int[FloorBins];
+    int floorSamples;
+    float floorHistBase;                    // высота нижнего края гистограммы в этом кадре
+
     readonly Dictionary<Vector2Int, Cell> cells = new();
     float learnedFloorY = float.NaN;
-    float floorCandidate = float.MaxValue;
     bool floorInit;
     readonly List<Vector2Int> tmpKeys = new();
     readonly List<Transform> tiles = new();
@@ -274,7 +283,7 @@ public class ObstacleMap : MonoBehaviour
             pending = true;
         }
 
-        floorCandidate = float.MaxValue;
+        ResetFloorHist();
         statusCounts.Clear();
         if (!pending)
         {
@@ -311,7 +320,7 @@ public class ObstacleMap : MonoBehaviour
     {
         Vector3 origin = head.position;
         int hits = 0;
-        floorCandidate = float.MaxValue;
+        ResetFloorHist();
         statusCounts.Clear();
 
         var sw = System.Diagnostics.Stopwatch.StartNew();
@@ -348,13 +357,38 @@ public class ObstacleMap : MonoBehaviour
         raysThisSecondCounter += fired;
     }
 
-    /// <summary>Обучение высоты пола по самой низкой точке кадра, полученной лучом или точкой вниз (floorCandidate).</summary>
+    void ResetFloorHist()
+    {
+        System.Array.Clear(floorHist, 0, FloorBins);
+        floorSamples = 0;
+        floorHistBase = head.position.y - FloorSearchTop - FloorBins * FloorBin;
+    }
+
+    /// <summary>Высота точки, полученной под углом вниз, в гистограмму пола. Точки выше окна поиска - не пол.</summary>
+    void RecordFloor(float y)
+    {
+        int bin = Mathf.FloorToInt((y - floorHistBase) / FloorBin);
+        if (bin >= FloorBins) return;
+        if (bin < 0) bin = 0;
+        floorHist[bin]++;
+        floorSamples++;
+    }
+
+    /// <summary>Обучение высоты пола: нижний FloorPercentile высот точек под углом вниз за кадр (не минимум: он ловит выбросы).</summary>
     void LearnFloor()
     {
-        if (floorCandidate >= float.MaxValue) return;
-        float eye = head.position.y - floorCandidate;
+        if (floorSamples == 0) return;
+        int need = Mathf.Max(1, Mathf.CeilToInt(floorSamples * FloorPercentile));
+        int acc = 0, bin = FloorBins - 1;
+        for (int i = 0; i < FloorBins; i++)
+        {
+            acc += floorHist[i];
+            if (acc >= need) { bin = i; break; }
+        }
+        float candidate = floorHistBase + (bin + 0.5f) * FloorBin;
+        float eye = head.position.y - candidate;
         if (eye > 0.9f && eye < 2.2f)
-            learnedFloorY = float.IsNaN(learnedFloorY) ? floorCandidate : Mathf.Lerp(learnedFloorY, floorCandidate, 0.05f);
+            learnedFloorY = float.IsNaN(learnedFloorY) ? candidate : Mathf.Lerp(learnedFloorY, candidate, 0.05f);
     }
 
     bool ProcessRay(Vector3 origin, Vector3 dir)
@@ -380,7 +414,7 @@ public class ObstacleMap : MonoBehaviour
 
         if (raiseEvent) OnDepthHit?.Invoke(point);
 
-        if (dir.y < -0.55f && dist < 2.5f && point.y < floorCandidate) floorCandidate = point.y;
+        if (dir.y < -0.55f && dist < 2.5f) RecordFloor(point.y);
 
         float h = point.y - floorY;
 
