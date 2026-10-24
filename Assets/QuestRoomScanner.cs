@@ -79,7 +79,8 @@ public class QuestRoomScanner : MonoBehaviour
         var ds = DepthSampler.Instance;
         if (ds == null) return $"Глубина: {src}  шейдер: нет";
         if (!ds.ready) return $"Глубина: {src}  шейдер: {ds.status}";
+        if (!ds.calibrated) return $"Глубина: {src}  шейдер: {ds.validCount} т.  калибровка: {ds.calibrationInfo}";
         string err = ds.calibErrorMedian >= 0f ? (ds.calibErrorMedian * 100f).ToString("F1") + " см" : "-";
-        return $"Глубина: {src}  шейдер: {ds.validCount} т.  {ds.pointsPerSecond / 1000f:F0}k/с  ошибка {err}";
+        return $"Глубина: {src}  шейдер: {ds.validCount} т.  {ds.pointsPerSecond / 1000f:F0}k/с  ошибка {err}  [{ds.calibrationInfo}]";
     }
 }

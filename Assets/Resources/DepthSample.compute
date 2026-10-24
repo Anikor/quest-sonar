@@ -4,6 +4,7 @@
 //   в кольцевой буфер _Points по смещению _BaseIndex. Точка: xyz = мир, w = расстояние от головы (0 = нет данных).
 //   Фильтр границ (_EdgeFilter): "летящие" пиксели на границах предметов (промежуточная глубина, которой нет
 //   ни у предмета, ни у фона) отбрасываются: точка остаётся, если хотя бы 2 из 4 соседей близки к ней по глубине.
+//   Диагностика (_Diag): гистограмма сырых значений глубины в _RawHist (читается один раз при старте).
 // Kernel BuildQuads: для всех точек кольцевого буфера строит квады (4 вершины по 20 байт: позиция float3,
 //   цвет RGBA8, uv half2) прямо в вершинный буфер меша (DepthPointCloud). Цвет = высота над полом,
 //   прозрачность = возраст кадра.
@@ -11,9 +12,10 @@
 // Математика восстановления (по исходникам Meta: EnvironmentDepthUtils.cs, EnvironmentOcclusion.cginc,
 // MRUK EnvironmentDepthRaycaster; одинакова в SDK 85, 201 и 207):
 //   _EnvironmentDepthReprojectionMatrices[eye] переводит МИРОВУЮ точку в clip-пространство камеры глубины
-//   (проекция в стиле OpenGL), uv = (clip.xy / clip.w + 1) / 2 без переворота Y, NDC-z = raw * 2 - 1,
-//   линейная глубина = ZB.x / (ndcZ + ZB.y). Значит мир = inverse(VP) * (uv * 2 - 1, raw * 2 - 1, 1)
-//   с делением на w. raw == 1 означает "нет глубины".
+//   (проекция в стиле OpenGL), uv = (clip.xy / clip.w + 1) / 2, NDC-z = raw * 2 - 1,
+//   линейная глубина = ZB.x / (ndcZ + ZB.y). Значит мир = inverse(VP) * (uv * 2 - 1, ndcZ, 1) с делением на w.
+//   На устройстве соглашения могут отличаться (порядок глубины, переворот Y), поэтому они параметризованы
+//   (_ZMode, _FlipY) и подбираются DepthSampler автоматически по лучам Raycast.
 
 #pragma kernel Sample
 #pragma kernel Sample2D
@@ -23,6 +25,7 @@
 Texture2DArray<float> _Depth;        // _EnvironmentDepthTexture (слои = глаза)
 Texture2D<float>      _Depth2D;      // запасной вариант, если текстура окажется не массивом
 RWStructuredBuffer<float4> _Points;  // кольцевой буфер точек
+RWStructuredBuffer<uint>   _RawHist; // 32 корзины: 0..29 = raw в [k/30, (k+1)/30), 30 = raw <= 0, 31 = raw >= 1
 
 float4x4 _InvVP;        // обратная матрица репроекции камеры глубины (clip -> мир)
 float4   _HeadPos;      // позиция головы (для w = расстояние)
@@ -30,7 +33,9 @@ float4   _ZB;           // _EnvironmentDepthZBufferParams
 int      _GridW, _GridH;
 int      _DepthW, _DepthH;
 int      _Slice;
-int      _FlipY;
+int      _FlipY;        // 1 = перевернуть текстуру по вертикали
+int      _ZMode;        // 0: NDC-z = raw*2-1 (как в шейдерах Meta); 1: обратный порядок, NDC-z = 1-2*raw
+int      _Diag;         // 1 = накапливать гистограмму сырых значений в _RawHist
 int      _BaseIndex;    // смещение текущего слота в кольцевом буфере
 float2   _Jitter;       // сдвиг сетки внутри ячейки (0..1), меняется каждый кадр
 float    _MinDist, _MaxDist;
@@ -49,9 +54,14 @@ int2 ClampPx(int2 px)
     return clamp(px, int2(0, 0), int2(_DepthW - 1, _DepthH - 1));
 }
 
+float NdcZ(float raw)
+{
+    return _ZMode == 1 ? 1.0 - 2.0 * raw : raw * 2.0 - 1.0;
+}
+
 float LinearOf(float raw)
 {
-    return _ZB.x / (raw * 2.0 - 1.0 + _ZB.y);      // метры вдоль оси камеры глубины (формула Meta)
+    return _ZB.x / (NdcZ(raw) + _ZB.y);      // метры вдоль оси камеры глубины (формула Meta)
 }
 
 bool NeighborsAgree(float linearDepth, float4 nraw)
@@ -71,14 +81,20 @@ void WritePoint(uint2 id, int2 px, float raw, float4 nraw)
 {
     uint idx = (uint)_BaseIndex + id.y * (uint)_GridW + id.x;
 
+    if (_Diag != 0)
+    {
+        uint bin = raw <= 0.0 ? 30u : (raw >= 1.0 ? 31u : (uint)(raw * 30.0));
+        InterlockedAdd(_RawHist[bin], 1u);
+    }
+
     float2 uvc = (float2(px) + 0.5) / float2(_DepthW, _DepthH);
     if (_FlipY != 0) uvc.y = 1.0 - uvc.y;
 
-    float ndcZ = raw * 2.0 - 1.0;
+    float ndcZ = NdcZ(raw);
     float4 h = mul(_InvVP, float4(uvc * 2.0 - 1.0, ndcZ, 1.0));
     float3 p = h.xyz / h.w;
 
-    float linearDepth = LinearOf(raw);
+    float linearDepth = _ZB.x / (ndcZ + _ZB.y);
     float dist = distance(p, _HeadPos.xyz);
 
     bool ok = raw > 0.0 && raw < 1.0 && abs(h.w) > 1e-6

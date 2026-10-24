@@ -255,12 +255,12 @@ public class ObstacleMap : MonoBehaviour
     {
         if (depthSource == DepthSource.Raycast) return DepthSource.Raycast;
         var ds = DepthSampler.Instance;
-        bool have = ds != null && ds.ready && ds.Points != null;
+        bool have = ds != null && ds.ready && ds.calibrated && ds.Points != null;   // до калибровки точкам верить нельзя
         if (depthSource == DepthSource.Texture) return have ? DepthSource.Texture : DepthSource.Raycast;
 
-        // Auto: нужны точки и приемлемая самопроверка (пока медианы нет, остаёмся на лучах)
+        // Auto: нужны точки, успешная калибровка (have) и приемлемая текущая ошибка мониторинга
         if (!have || ds.validCount < textureMinPoints) return DepthSource.Raycast;
-        if (ds.calibrate && (ds.calibErrorMedian < 0f || ds.calibErrorMedian > textureMaxError)) return DepthSource.Raycast;
+        if (ds.calibErrorMedian > textureMaxError) return DepthSource.Raycast;
         return DepthSource.Texture;
     }
 

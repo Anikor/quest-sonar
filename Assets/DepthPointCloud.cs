@@ -48,7 +48,7 @@ public class DepthPointCloud : MonoBehaviour
     [Range(0f, 1f)] public float minAlpha = 0.25f;
 
     const int VertexStride = 20;    // float3 позиция + RGBA8 цвет + half2 uv, см. DepthSample.compute
-    const float WaitSamplerSeconds = 30f;
+    const float WaitSamplerSeconds = 120f;   // DepthSampler ждёт глубину до 15 с и потом калибруется (с повторами)
 
     ParticleSystem ps;
     ParticleSystemRenderer psRenderer;
@@ -60,7 +60,8 @@ public class DepthPointCloud : MonoBehaviour
     Mesh cloudMesh;
     MeshRenderer cloudRenderer;
     GraphicsBuffer cloudVerts;
-    bool gpuCloudActive;
+    bool gpuCloudActive;    // меш создан
+    bool cloudVisible;      // меш показывается вместо частиц (DepthSampler готов и откалиброван)
 
     ObstacleMap map;
     Camera cam;
@@ -152,7 +153,7 @@ public class DepthPointCloud : MonoBehaviour
         if (cam != null && (p - cam.transform.position).sqrMagnitude < closeRayDistance * closeRayDistance)
             closeThisFrame++;
 
-        if (ps == null || gpuCloudActive || emitted >= maxEmitPerFrame) return;
+        if (ps == null || cloudVisible || emitted >= maxEmitPerFrame) return;
         emitted++;
 
         float t = Mathf.Clamp01((p.y - map.floorY) / colorHeightRange);
@@ -167,26 +168,26 @@ public class DepthPointCloud : MonoBehaviour
     // ---------------------------------------------------------------- GPU-облако (основной режим)
     IEnumerator SetupGpuCloud()
     {
-        // DepthSampler сам ждёт глубину до 15 с; ждём его решения (ready или failed)
+        // DepthSampler сам ждёт глубину до 15 с и калибруется по лучам; ждём готовности и калибровки (или отказа)
         DepthSampler ds = null;
         float t = 0f;
         while (t < WaitSamplerSeconds)
         {
             ds = DepthSampler.Instance;
-            if (ds != null && (ds.ready || ds.failed)) break;
+            if (ds != null && ((ds.ready && ds.calibrated) || ds.failed)) break;
             t += Time.deltaTime;
             yield return null;
         }
-        if (ds == null || !ds.ready)
+        if (ds == null || !ds.ready || !ds.calibrated)
         {
-            Debug.Log("DepthPointCloud: DepthSampler не готов, остаются частицы.");
+            Debug.Log("DepthPointCloud: DepthSampler не готов или не откалиброван, остаются частицы.");
             yield break;
         }
         if (!CreateCloudMesh(ds)) yield break;
 
         gpuCloudActive = true;
         if (ps != null) ps.Clear();
-        SetPassthrough(passthroughOn);   // обновить видимость: меш вместо частиц
+        UpdateRenderers();   // меш вместо частиц
         Debug.Log($"DepthPointCloud: GPU-облако на {ds.SlotSize * ds.History} точек.");
     }
 
@@ -280,12 +281,18 @@ public class DepthPointCloud : MonoBehaviour
         closeLastFrame = closeThisFrame >= closeRayCount;
         closeThisFrame = 0;
 
-        if (gpuCloudActive && !passthroughOn && cam != null)
-        {
-            var ds = DepthSampler.Instance;
-            if (ds != null && ds.ready)
-                ds.BuildQuads(cloudVerts, cam.transform.right, cam.transform.up, gpuPointSize, map.floorY, colorHeightRange, minAlpha);
-        }
+        UpdateRenderers();
+        if (cloudVisible && !passthroughOn && cam != null)
+            DepthSampler.Instance.BuildQuads(cloudVerts, cam.transform.right, cam.transform.up, gpuPointSize, map.floorY, colorHeightRange, minAlpha);
+    }
+
+    /// <summary>Меш показывается, только пока DepthSampler готов и откалиброван (иначе точкам верить нельзя); иначе частицы.</summary>
+    void UpdateRenderers()
+    {
+        var ds = DepthSampler.Instance;
+        cloudVisible = gpuCloudActive && ds != null && ds.ready && ds.calibrated;
+        if (cloudRenderer != null) cloudRenderer.enabled = !passthroughOn && cloudVisible;
+        if (psRenderer != null) psRenderer.enabled = !passthroughOn && !cloudVisible;
     }
 
     public void SetPassthrough(bool on)
@@ -301,7 +308,6 @@ public class DepthPointCloud : MonoBehaviour
             else { cam.clearFlags = CameraClearFlags.SolidColor; cam.backgroundColor = Color.black; }
         }
 
-        if (psRenderer != null) psRenderer.enabled = !on && !gpuCloudActive;
-        if (cloudRenderer != null) cloudRenderer.enabled = !on;
+        UpdateRenderers();
     }
 }
