@@ -119,12 +119,64 @@ public class DepthPointCloud : MonoBehaviour
         ps.Play();
     }
 
+    // ---------------- Часть 2: отрисовка облака из GPU-буфера DepthSampler ----------------
+    [Header("GPU-облако (Часть 2)")]
+    public bool useGpuCloud = true;
+    [Tooltip("GPU-облако включается само, когда ошибка самопроверки vs Raycast (м) не больше этого значения. Иначе рисуются частицы")]
+    public float gpuMaxCalibError = 0.05f;
+    public float gpuPointSize = 0.02f;
+    Material gpuMat;
+    bool gpuActive;
+
+    void UpdateGpuCloud()
+    {
+        var s = DepthSampler.Instance;
+        bool want = useGpuCloud && s != null && s.ready && s.PointsBuffer != null
+                    && s.calibErrorMedian >= 0f && s.calibErrorMedian <= gpuMaxCalibError;
+
+        if (want && gpuMat == null)
+        {
+            var sh = Resources.Load<Shader>("DepthPointRender");
+            if (sh == null || !sh.isSupported)
+            {
+                Debug.LogError("DepthPointCloud: шейдер DepthPointRender не найден или не поддерживается, остаются частицы.");
+                useGpuCloud = false;
+                return;
+            }
+            gpuMat = new Material(sh);
+        }
+
+        if (want != gpuActive)
+        {
+            gpuActive = want;
+            if (psRenderer != null) psRenderer.enabled = !gpuActive;
+            Debug.Log("DepthPointCloud: " + (gpuActive ? "GPU-облако включено" : "частицы (GPU-облако выключено)"));
+        }
+        if (!gpuActive || cam == null) return;
+
+        gpuMat.SetBuffer("_Points", s.PointsBuffer);
+        gpuMat.SetFloat("_Size", gpuPointSize);
+        gpuMat.SetFloat("_FloorY", map.floorY);
+        gpuMat.SetFloat("_HeightRange", colorHeightRange);
+        gpuMat.SetFloat("_PerFrame", s.PointsPerFrame);
+        gpuMat.SetFloat("_Slots", Mathf.Max(1, s.historyFrames));
+        gpuMat.SetFloat("_CurSlot", s.CurrentSlot);
+
+        var rp = new RenderParams(gpuMat)
+        {
+            worldBounds = new Bounds(cam.transform.position, Vector3.one * 50f),
+            shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off,
+            receiveShadows = false
+        };
+        Graphics.RenderPrimitives(rp, MeshTopology.Triangles, 6 * s.TotalPoints, 1);
+    }
+
     void OnHit(Vector3 p)
     {
         if (cam != null && (p - cam.transform.position).sqrMagnitude < closeRayDistance * closeRayDistance)
             closeThisFrame++;
 
-        if (ps == null || emitted >= maxEmitPerFrame) return;
+        if (ps == null || gpuActive || emitted >= maxEmitPerFrame) return;
         emitted++;
 
         float t = Mathf.Clamp01((p.y - map.floorY) / colorHeightRange);
@@ -139,6 +191,8 @@ public class DepthPointCloud : MonoBehaviour
     void Update()
     {
         if (map == null) return;
+
+        UpdateGpuCloud();
 
         if (toggleWithButtons &&
             (OVRInput.GetDown(OVRInput.Button.Two) || OVRInput.GetDown(OVRInput.Button.Four)))

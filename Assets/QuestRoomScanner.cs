@@ -65,6 +65,9 @@ public class QuestRoomScanner : MonoBehaviour
         sb.AppendLine($"Пол: y={map.floorY:F2}  клеток: {map.occupiedCount}");
         sb.Append($"Скан: {fps:F0}/с  лучи {map.lastHits}/{map.lastRays}  {map.raysPerSecond:F0} лучей/с  {map.scanMs:F1} мс  ");
         foreach (var kv in map.statusCounts) sb.Append(kv.Key).Append('=').Append(kv.Value).Append(' ');
+        var ds = DepthSampler.Instance;
+        if (ds != null)
+            sb.Append($"\nШейдер: {(ds.ready ? ds.validCount + " т." : "не готов")}  {ds.pointsPerSecond:F0}/с  ошибка {(ds.calibErrorMedian >= 0 ? (ds.calibErrorMedian * 100f).ToString("F1") + " см" : "-")}  {ds.status}");
         hud.text = sb.ToString();
 
         hud.color = map.LevelColor();

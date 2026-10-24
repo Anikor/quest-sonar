@@ -1,0 +1,44 @@
+#pragma kernel Sample
+
+Texture2DArray<float> _Depth;          // _EnvironmentDepthTexture (слои = глаза)
+RWStructuredBuffer<float4> _Points;    // xyz = мировая точка, w = расстояние от головы (0 = нет данных)
+
+float4x4 _InvVP;       // обратная матрица репроекции глубинной камеры
+float4   _CamPos;      // позиция головы
+int      _GridW, _GridH;
+int      _DepthW, _DepthH;
+int      _Slice;
+int      _BaseIndex;   // начало текущего кадра в кольцевом буфере истории
+int      _FlipY;
+int      _ZMode;       // 0: z=d  1: z=2d-1  2: z=1-d  3: z=2(1-d)-1
+float2   _Jitter;      // сдвиг сетки внутри ячейки, меняется каждый кадр
+float    _MinDist, _MaxDist;
+
+[numthreads(8, 8, 1)]
+void Sample(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= (uint)_GridW || id.y >= (uint)_GridH) return;
+    uint idx = id.y * (uint)_GridW + id.x;
+
+    float2 uv = (float2(id.xy) + _Jitter) / float2(_GridW, _GridH);
+    int2 px = clamp(int2(uv * float2(_DepthW, _DepthH)), int2(0, 0), int2(_DepthW - 1, _DepthH - 1));
+
+    float d = _Depth.Load(int4(px, _Slice, 0));
+
+    float2 uvc = (float2(px) + 0.5) / float2(_DepthW, _DepthH);
+    float2 ndc = float2(uvc.x, _FlipY != 0 ? 1.0 - uvc.y : uvc.y) * 2.0 - 1.0;
+
+    float z = d;
+    if (_ZMode == 1) z = 2.0 * d - 1.0;
+    else if (_ZMode == 2) z = 1.0 - d;
+    else if (_ZMode == 3) z = 2.0 * (1.0 - d) - 1.0;
+
+    float4 w = mul(_InvVP, float4(ndc, z, 1.0));
+    float3 p = w.xyz / w.w;
+    float dist = distance(p, _CamPos.xyz);
+
+    bool ok = (d > 0.0) && (d < 1.0) && (abs(w.w) > 1e-6) && isfinite(dist)
+              && dist > _MinDist && dist < _MaxDist;
+
+    _Points[(uint)_BaseIndex + idx] = ok ? float4(p, dist) : float4(0, 0, 0, 0);
+}
