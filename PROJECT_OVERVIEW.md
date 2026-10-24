@@ -180,6 +180,8 @@ Quest 3 depth sensor
 8. Тесты со слепыми и слабовидящими пользователями и подбор параметров звука.
 
 ## Как вернуться к предыдущим версиям
+Репозиторий на GitHub: **https://github.com/Anikor/quest-sonar** (ветка по умолчанию `main` = v1, работа в `dev`). На ПК с Unity проще клонировать его, чем переносить zip: `git clone -b dev https://github.com/Anikor/quest-sonar.git`.
+
 Репозиторий git содержит:
 - тег `v1-audio-sonar` и ветку `stable/v1-audio-sonar` (только v1, не менять);
 - тег `v2-depth-gpu` (эта версия);
