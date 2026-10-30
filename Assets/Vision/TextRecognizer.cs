@@ -148,6 +148,33 @@ public static class OcrImage
         return list;
     }
 
+    /// <summary>
+    /// Убирает дубли: одно и то же слово, найденное дважды (обычный и инвертированный проход, две области с полем),
+    /// то есть рамки сильно перекрываются (IoU > 0.5). Остаётся слово с большей уверенностью.
+    /// </summary>
+    public static void Dedupe(List<OcrWord> words)
+    {
+        for (int i = 0; i < words.Count; i++)
+        {
+            for (int j = words.Count - 1; j > i; j--)
+            {
+                if (IoU(words[i].rect, words[j].rect) <= 0.5f) continue;
+                if (words[j].confidence > words[i].confidence) words[i] = words[j];
+                words.RemoveAt(j);
+            }
+        }
+    }
+
+    public static float IoU(RectInt a, RectInt b)
+    {
+        int x0 = Math.Max(a.xMin, b.xMin), y0 = Math.Max(a.yMin, b.yMin);
+        int x1 = Math.Min(a.xMax, b.xMax), y1 = Math.Min(a.yMax, b.yMax);
+        if (x1 <= x0 || y1 <= y0) return 0f;
+        float inter = (x1 - x0) * (y1 - y0);
+        float union = a.width * a.height + b.width * b.height - inter;
+        return union > 0f ? inter / union : 0f;
+    }
+
     public static RectInt Union(RectInt a, RectInt b)
     {
         int x0 = Math.Min(a.xMin, b.xMin), y0 = Math.Min(a.yMin, b.yMin);
@@ -283,6 +310,7 @@ public sealed class TesseractRecognizer : ITextRecognizer
             for (int i = 0; i < n; i++) inv[i] = (byte)(255 - img[i]);
             RunPass(inv, width, height, PsmSparseText, pass1, 0, 0, 1, 1000, 1, true);
         }
+        OcrImage.Dedupe(pass1);   // одно слово, найденное обоими проходами, не должно читаться дважды
         lastPass1Ms = (float)sw.Elapsed.TotalMilliseconds;
         lastPass1Words = pass1.Count;
 
@@ -332,6 +360,7 @@ public sealed class TesseractRecognizer : ITextRecognizer
             }
             lineBase += 100;
         }
+        OcrImage.Dedupe(result);   // области с полями перекрываются, слово на границе попадает в обе
         lastPass2Ms = (float)sw.Elapsed.TotalMilliseconds;
     }
 

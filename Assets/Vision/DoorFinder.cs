@@ -55,6 +55,20 @@ public class DoorFinder : MonoBehaviour
     public float sceneRange = 6f;
     public float sceneInterval = 3f;
 
+    [Header("Сигнал двери (свой, независимо от звука ориентиров в AudioSonar)")]
+    [Tooltip("Двойной деревянный стук из направления ближайшей двери, пока она в пределах cueRange и cueYaw")]
+    public bool doorSound = true;
+    [Tooltip("Голосом: «дверь впереди / слева / справа» (язык голоса SpeechOutput), раз в voiceRepeat на дверь")]
+    public bool doorVoice = true;
+    public float cueRange = 4f;
+    [Tooltip("Дверь озвучивается, если она в этом секторе от взгляда, градусы в каждую сторону")]
+    public float cueYaw = 70f;
+    public float cueRepeat = 2.5f;
+    public float voiceRepeat = 10f;
+    [Range(0f, 1f)] public float cueVolume = 0.8f;
+    [Tooltip("Источник ставится не дальше этого расстояния от головы, чтобы громкость задавалась нами")]
+    public float maxSourceDistance = 2.5f;
+
     [Header("Журнал")]
     [Tooltip("Как часто писать ASCII-карту вокруг пользователя в vision-log, сек (0 = не писать)")]
     public float mapDumpInterval = 10f;
@@ -86,6 +100,13 @@ public class DoorFinder : MonoBehaviour
     float tick, sceneTick, dumpTick;
     int scanIndex, mapDumps;
 
+    // сигнал двери
+    AudioSource cueSrc;
+    AudioClip clipKnock;
+    float nextCue;
+    readonly Dictionary<int, float> lastVoice = new Dictionary<int, float>();
+    const int SampleRate = 48000;
+
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
     static void Boot()
     {
@@ -107,6 +128,8 @@ public class DoorFinder : MonoBehaviour
         if (map == null || head == null) { status = "двери: нет карты"; yield break; }
         query = map.QueryCell;
         status = "двери: ищу";
+        clipKnock = MakeKnockKnock("doorKnock");
+        cueSrc = MakeSource("DoorCue");
         VisionLog.Event("doorfinder", $"\"detectPassages\":{VisionLog.B(detectPassages)},\"range\":{VisionLog.F(range)},\"minWidth\":{VisionLog.F(minWidth)},\"maxWidth\":{VisionLog.F(maxWidth)},\"minDepthBeyond\":{VisionLog.F(minDepthBeyond)},\"confirmScans\":{confirmScans},\"cellSize\":{VisionLog.F(map.cellSize)},\"mapMaxDistance\":{VisionLog.F(map.maxDistance)}");
     }
 
@@ -142,6 +165,115 @@ public class DoorFinder : MonoBehaviour
         }
 
         UpdateStatus();
+        UpdateCue(now);
+    }
+
+    // ---------------------------------------------------------------- сигнал двери
+    /// <summary>Ближайшая дверь (по карте или из модели комнаты) в секторе cueYaw и ближе cueRange; -1 = нет.</summary>
+    bool NearestDoorForCue(out Vector3 center, out float dist, out float yaw, out int key)
+    {
+        center = Vector3.zero; dist = float.MaxValue; yaw = 0f; key = 0;
+        Vector3 hp = head.position;
+        foreach (var t in tracks)
+        {
+            if (!t.reported) continue;
+            float d = Mathf.Sqrt(Flat2(t.center, hp));
+            float y = YawTo(t.center);
+            if (d > cueRange || Mathf.Abs(y) > cueYaw || d >= dist) continue;
+            center = t.center; dist = d; yaw = y; key = t.id;
+        }
+        for (int i = 0; i < sceneDoorCenters.Count; i++)
+        {
+            float d = Mathf.Sqrt(Flat2(sceneDoorCenters[i], hp));
+            float y = YawTo(sceneDoorCenters[i]);
+            if (d > cueRange || Mathf.Abs(y) > cueYaw || d >= dist) continue;
+            center = sceneDoorCenters[i]; dist = d; yaw = y; key = 1000003 + i;
+        }
+        return dist < float.MaxValue;
+    }
+
+    void UpdateCue(float now)
+    {
+        if ((!doorSound && !doorVoice) || cueSrc == null) return;
+        if (!NearestDoorForCue(out Vector3 c, out float d, out float yaw, out int key)) return;
+
+        if (doorSound && now >= nextCue)
+        {
+            Vector3 flat = c - head.position; flat.y = 0f;
+            float r = Mathf.Clamp(d, 0.4f, maxSourceDistance);
+            cueSrc.transform.position = head.position + (flat.sqrMagnitude > 1e-6f ? flat.normalized : head.forward) * r;
+            cueSrc.volume = cueVolume * Mathf.Lerp(1f, 0.45f, Mathf.Clamp01(d / cueRange));
+            cueSrc.PlayOneShot(clipKnock);
+            nextCue = now + cueRepeat;
+        }
+
+        if (doorVoice && (!lastVoice.TryGetValue(key, out float tv) || now - tv >= voiceRepeat))
+        {
+            lastVoice[key] = now;
+            string phrase = DoorPhrase(yaw);
+            SpeechOutput.Speak(phrase, false);
+            VisionLog.Event("door_voice", $"\"text\":{VisionLog.Str(phrase)},\"dist\":{VisionLog.F(d)},\"yaw\":{VisionLog.F(yaw)},\"key\":{key}");
+        }
+    }
+
+    /// <summary>«дверь впереди / слева / справа» на языке голоса (ro / ru / en).</summary>
+    static string DoorPhrase(float yaw)
+    {
+        string lang = SpeechOutput.Instance != null ? SpeechOutput.Instance.language : "";
+        int side = yaw < -15f ? -1 : yaw > 15f ? 1 : 0;
+        if (lang.StartsWith("ro")) return side < 0 ? "ușă la stânga" : side > 0 ? "ușă la dreapta" : "ușă în față";
+        if (lang.StartsWith("ru")) return side < 0 ? "дверь слева" : side > 0 ? "дверь справа" : "дверь впереди";
+        return side < 0 ? "door on the left" : side > 0 ? "door on the right" : "door ahead";
+    }
+
+    AudioSource MakeSource(string name)
+    {
+        var go = new GameObject(name);
+        go.transform.SetParent(head, false);
+        var a = go.AddComponent<AudioSource>();
+        a.playOnAwake = false;
+        a.loop = false;
+        a.spatialBlend = 1f;
+        a.spatialize = true;
+        a.dopplerLevel = 0f;
+        a.rolloffMode = AudioRolloffMode.Linear;
+        a.minDistance = 0.3f;
+        a.maxDistance = 6f;
+        // Meta XR Audio (HRTF), если пакет есть: тот же приём, что в AudioSonar
+        foreach (var asm in System.AppDomain.CurrentDomain.GetAssemblies())
+        {
+            System.Type t = null;
+            try { t = asm.GetType("MetaXRAudioSource"); } catch { /* сборка не читается */ }
+            if (t != null && typeof(Component).IsAssignableFrom(t)) { go.AddComponent(t); break; }
+        }
+        return a;
+    }
+
+    /// <summary>Два коротких деревянных стука («тук-тук»): глухой тон ~170 Гц с быстрым затуханием и щелчком, пауза 0.12 с.</summary>
+    static AudioClip MakeKnockKnock(string name)
+    {
+        const float knockLen = 0.09f, gap = 0.12f;
+        int kn = (int)(SampleRate * knockLen), gn = (int)(SampleRate * gap);
+        var data = new float[kn * 2 + gn];
+        var rnd = new System.Random(777);
+        for (int k = 0; k < 2; k++)
+        {
+            int off = k * (kn + gn);
+            float phase = 0f;
+            for (int i = 0; i < kn; i++)
+            {
+                float t = i / (float)SampleRate;
+                float u = i / (float)kn;
+                float f = 170f * (1f - 0.3f * u);
+                phase += 2f * Mathf.PI * f / SampleRate;
+                float env = Mathf.Clamp01(t / 0.003f) * Mathf.Exp(-t / (knockLen * 0.28f)) * Mathf.Clamp01((knockLen - t) / 0.01f);
+                float click = ((float)rnd.NextDouble() * 2f - 1f) * 0.25f * Mathf.Exp(-t / 0.002f);
+                data[off + i] = (Mathf.Sin(phase) * 0.7f + 0.25f * Mathf.Sin(2.3f * phase) + click) * env * 0.9f;
+            }
+        }
+        var clip = AudioClip.Create(name, data.Length, 1, SampleRate, false);
+        clip.SetData(data, 0);
+        return clip;
     }
 
     // ---------------------------------------------------------------- проёмы по карте

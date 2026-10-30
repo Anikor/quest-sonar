@@ -217,6 +217,13 @@ public static class VisionCheck
         if (regs.Count == 2)
             Check(regs[1].rect.xMin == 100 && regs[1].rect.xMax == 200 && regs[1].medianHeight >= 19f && regs[1].medianHeight <= 20f,
                   $"область Каб 12: {regs[1].rect}, медианная высота {regs[1].medianHeight}");
+        var dup = new List<OcrWord>
+        {
+            W("LA", 70f, 100, 100, 40, 20, 0), W("LA", 85f, 102, 101, 40, 19, 5),   // одно слово из двух проходов
+            W("LA", 80f, 300, 100, 40, 20, 0)                                       // другое место - остаётся
+        };
+        OcrImage.Dedupe(dup);
+        Check(dup.Count == 2 && dup[0].confidence == 85f, $"дубли слов убраны: осталось {dup.Count}, уверенность первого {dup[0].confidence}");
         var ex = OcrImage.Expand(new RectInt(5, 5, 10, 10), 8, 100, 100);
         Check(ex.xMin == 0 && ex.yMin == 0 && ex.xMax == 23 && ex.yMax == 23, $"Expand обрезает по кадру: {ex}");
         Check(OcrImage.Score(new List<OcrWord> { W("АБВ", 90f, 0, 0, 1, 1, 0), W("Г", 30f, 0, 0, 1, 1, 0) }) == 75f, "Score взвешен по длине (90*3+30*1)/4 = 75");
