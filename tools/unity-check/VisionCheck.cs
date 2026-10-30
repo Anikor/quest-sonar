@@ -110,6 +110,20 @@ public static class VisionCheck
         n = NavZones.FindPassages(Room(1f, 0.9f, NavZones.Cell.Low).Query, Cs, Vector3.zero, Vector3.forward, 90f, 2f, 5f, 0.6f, 1.6f, 1f, 0.25f, res, true);
         Check(n == 0, $"tallOnly: зазор между низкой мебелью по-прежнему не дверь ({n})");
 
+        // косяки должны быть в стене: два отдельно стоящих высоких предмета (шкаф и монитор) с зазором 0.9 м - не дверь,
+        // а настоящая дверь в стене с тем же требованием находится; проём ближе 0.8 м от головы не ищется
+        var pillars = new Grid();
+        pillars.Fill(-3f, -3f, 3f, 3f, NavZones.Cell.Free);
+        pillars.Fill(0.3f, 2.0f, 0.5f, 2.2f, NavZones.Cell.Tall);
+        pillars.Fill(1.4f, 2.0f, 1.6f, 2.2f, NavZones.Cell.Tall);
+        int nPillarsPlain = Passages(pillars, res);
+        int nPillarsWall = NavZones.FindPassages(pillars.Query, Cs, Vector3.zero, Vector3.forward, 90f, 2f, 5f, 0.6f, 1.6f, 1f, 0.25f, res, true, 0.8f, true);
+        int nDoorWall = NavZones.FindPassages(Room(1f, 0.9f).Query, Cs, Vector3.zero, Vector3.forward, 90f, 2f, 5f, 0.6f, 1.6f, 1f, 0.25f, res, true, 0.8f, true);
+        Check(nPillarsPlain >= 1 && nPillarsWall == 0 && nDoorWall == 1,
+              $"зазор между двумя столбами: без проверки стены {nPillarsPlain}, с проверкой {nPillarsWall}; дверь в стене с проверкой {nDoorWall} (ожидается >=1, 0, 1)");
+        int nNear = NavZones.FindPassages(Room(1f, 0.9f).Query, Cs, new Vector3(1f, 0f, 2.6f), Vector3.forward, 90f, 2f, 5f, 0.6f, 1.6f, 1f, 0.25f, res, true, 0.8f, true);
+        Check(nNear == 0, $"дверь в 0.4 м от головы не считается ({nNear})");
+
         var slot = new Grid();
         slot.Fill(-3f, -3f, 3f, 3f, NavZones.Cell.Free);
         slot.Wall(-1f, 2f, -0.2f, 2f);

@@ -51,6 +51,19 @@ public static class NavZones
 
     static bool Blocked(Cell c) { return c == Cell.Low || c == Cell.Tall; }
 
+    /// <summary>Есть ли стена за косяком: хотя бы 2 из 3 клеток на 0.15 / 0.3 / 0.45 м от косяка в сторону dirOut высокие.</summary>
+    public static bool WallSupport(CellQuery cell, float cellSize, Vector3 jamb, Vector3 dirOut)
+    {
+        dirOut = Flat(dirOut);
+        int tall = 0;
+        for (int k = 1; k <= 3; k++)
+        {
+            Vector3 p = jamb + dirOut * (cellSize * 1.5f * k);
+            if (cell(ToCell(p, cellSize)) == Cell.Tall) tall++;
+        }
+        return tall >= 2;
+    }
+
     static Vector3 Flat(Vector3 v)
     {
         v.y = 0f;
@@ -159,7 +172,8 @@ public static class NavZones
     /// </summary>
     public static int FindPassages(CellQuery cell, float cellSize, Vector3 origin, Vector3 forward, float scanYaw,
                                    float stepDeg, float maxRange, float minWidth, float maxWidth, float minDepthBeyond,
-                                   float start, List<Passage> result, bool tallOnly = false)
+                                   float start, List<Passage> result, bool tallOnly = false,
+                                   float minDistance = 0f, bool requireWallJambs = false)
     {
         result.Clear();
         forward = Flat(forward);
@@ -215,7 +229,12 @@ public static class NavZones
                 Vector3 center = (a + b) * 0.5f;
                 Vector3 toC = center - origin;
                 toC.y = 0f;
-                float depth = Corridor(cell, cellSize, center, toC, 0f, 3f, cellSize, out _);
+                // Косяки должны быть частью стены: высокие клетки продолжаются от косяка в сторону от проёма.
+                // Иначе дверью становится любой зазор между двумя высокими предметами (шкаф и монитор, два человека).
+                bool jambsOk = !requireWallJambs || (WallSupport(cell, cellSize, a, a - b) && WallSupport(cell, cellSize, b, b - a));
+                float depth = jambsOk && toC.magnitude >= minDistance
+                    ? Corridor(cell, cellSize, center, toC, 0f, 3f, cellSize, out _)
+                    : -1f;
                 if (depth >= minDepthBeyond)
                 {
                     result.Add(new Passage

@@ -33,11 +33,17 @@ public class DoorFinder : MonoBehaviour
     [Tooltip("За проёмом должно быть свободно хотя бы столько метров (иначе ниша или шкаф)")]
     public float minDepthBeyond = 1f;
     [Tooltip("Проём должен быть найден в стольких сканах подряд, чтобы считаться дверью")]
-    public int confirmScans = 2;
+    public int confirmScans = 3;
     [Tooltip("Низкие препятствия в проёме не закрывают его: порог, низ двери, ошибка высоты пола (по журналу со шлема дверь терялась из-за них)")]
     public bool ignoreLowInDoorway = true;
+    [Tooltip("Косяки должны быть частью стены (высокие клетки продолжаются в стороны). По журналу со шлема без этого дверью считался любой зазор между шкафом и монитором")]
+    public bool requireWallJambs = true;
+    [Tooltip("Проёмы ближе этого расстояния от головы не ищутся, м (в самом проёме его форму не разобрать)")]
+    public float minDistance = 0.8f;
     [Tooltip("Проёмы ближе этого расстояния друг к другу считаются одним, м")]
-    public float mergeDistance = 0.7f;
+    public float mergeDistance = 1.2f;
+    [Tooltip("Проём по карте ближе этого расстояния к двери из модели комнаты считается ею (не дублируется), м")]
+    public float sceneMergeDistance = 2f;
     [Tooltip("Проём, не подтверждавшийся столько секунд, забывается")]
     public float forgetAfter = 6f;
     [Tooltip("Подтверждённый проём продолжает сообщаться в реестр, пока с последнего подтверждения прошло не больше, сек (карта шумит, проём виден не каждый скан)")]
@@ -143,7 +149,7 @@ public class DoorFinder : MonoBehaviour
     {
         scanIndex++;
         NavZones.FindPassages(query, map.cellSize, head.position, head.forward, scanYaw, scanStepDeg, range,
-                              minWidth, maxWidth, minDepthBeyond, 0.25f, found, ignoreLowInDoorway);
+                              minWidth, maxWidth, minDepthBeyond, 0.25f, found, ignoreLowInDoorway, minDistance, requireWallJambs);
 
         foreach (var p in found)
         {
@@ -221,7 +227,7 @@ public class DoorFinder : MonoBehaviour
 
     bool NearSceneDoor(Vector3 c)
     {
-        foreach (var s in sceneDoorCenters) if (Flat2(s, c) < 1f) return true;
+        foreach (var s in sceneDoorCenters) if (Flat2(s, c) < sceneMergeDistance * sceneMergeDistance) return true;
         return false;
     }
 
