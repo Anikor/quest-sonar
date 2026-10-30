@@ -63,6 +63,23 @@ PassthroughCameraAccess (MRUK) ──GetColors()──► PassthroughCameraFeed:
 6. Minimum API / target: Horizon OS v74+ на шлеме (камера passthrough). Если `PassthroughCameraAccess.IsSupported` = false,
    в метке будет «камера passthrough не поддерживается».
 
+## Голос на Quest 3: нужен eSpeak NG
+
+Системный движок синтеза речи Quest 3 (`com.oculus.systemintelligence`, «HzOS Text-to-Speech») для сторонних приложений
+бесполезен: он не знает ни одного языка (`setLanguage` = −2 для ro/ru/en) и отвечает на каждый вызов по 6-12 секунд,
+из-за чего приложение замирало (журнал 2026-10-30). Поэтому:
+
+1. На шлем ставится открытый офлайн-движок **eSpeak NG** (F-Droid, пакет `com.reecedunn.espeak`, умеет ro/ru/en) и
+   назначается движком по умолчанию (это же чинит голос условия D в `ExperimentController`, он берёт движок по умолчанию):
+   ```
+   adb install -r -g espeak-ng-1.52.0.apk        # https://f-droid.org/repo/com.reecedunn.espeak_22.apk
+   adb shell settings put secure tts_default_synth com.reecedunn.espeak
+   ```
+2. `SpeechOutput` пробует движки по списку `engines` (eSpeak → по умолчанию → системный), все вызовы Java делает
+   в отдельном потоке и берёт первый язык из `languagesPreferred` (ro, ru, en), который движок принимает.
+3. В манифесте обязателен блок `<queries>` с `android.intent.action.TTS_SERVICE`: без него Android 11+ вообще не даёт
+   приложению увидеть движки речи (`TextToSpeech` сразу возвращает ERROR).
+
 ## Как проверить на шлеме
 
 1. **Голос.** Сразу после запуска в метке справа: `Голос: готов (ru)`. Если `готов (en, русского голоса нет)` - в настройках

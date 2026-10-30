@@ -1,44 +1,42 @@
 using System;
 using System.Collections.Generic;
 using System.Text;
+using System.Threading;
 using UnityEngine;
 
 /// <summary>
-/// Голос для всего приложения: Android TextToSpeech (язык ru, запасной en). Один экземпляр и общая очередь фраз.
+/// Голос для всего приложения: Android TextToSpeech. Один экземпляр и общая очередь фраз.
 /// Создаётся сам при старте сцены и подключает себя к SonarLandmarks.SpeakHandler, если туда ещё никто не подключён:
 /// так AudioSonar произносит текст табличек, которые находит ветка vision (SignReader).
-/// В редакторе и не на Android фразы пишутся в консоль.
 ///
-/// Использование: SpeechOutput.Speak("выход");  SpeechOutput.Speak("стоп", interrupt: true);
+/// ВСЕ вызовы Java идут из отдельного потока: системный движок Quest 3 (com.oculus.systemintelligence) отвечает на
+/// setLanguage по 6-12 секунд и не знает языков, из главного потока это замораживало приложение (журнал 2026-10-30).
+/// Движки пробуются по списку engines: первым eSpeak NG (ставится на шлем отдельно, умеет ro/ru/en, работает без сети),
+/// затем движок по умолчанию, затем системный Quest. Берётся первый, который запустился и знает один из языков;
+/// если языков не знает никто, говорит последний запустившийся своим голосом по умолчанию.
+///
+/// Использование: SpeechOutput.Speak("ieșire");  SpeechOutput.Speak("стоп", interrupt: true);
+/// В редакторе и не на Android фразы пишутся в консоль.
 /// </summary>
 public class SpeechOutput : MonoBehaviour
 {
     public static SpeechOutput Instance { get; private set; }
 
-    [Tooltip("Языки голоса по порядку предпочтения (java.util.Locale): берётся первый, который есть у движка на шлеме")]
+    [Tooltip("Языки голоса по порядку предпочтения (теги BCP-47 или коды): берётся первый, который есть у движка")]
     public string[] languagesPreferred = { "ro", "ru", "en" };
-    [Tooltip("Какой язык выбран (только чтение)")]
-    public string language = "";
-    [Tooltip("Движки TTS по порядку: пусто = движок по умолчанию; на Quest 3 системный движок называется com.oculus.systemintelligence (HzOS Text-to-Speech)")]
-    public string[] engines = { "", "com.oculus.systemintelligence", "com.google.android.tts" };
+    [Tooltip("Движки TTS по порядку: пакет или пусто = движок по умолчанию. eSpeak NG = com.reecedunn.espeak (F-Droid), системный Quest = com.oculus.systemintelligence")]
+    public string[] engines = { "com.reecedunn.espeak", "", "com.oculus.systemintelligence" };
     [Tooltip("Одна и та же фраза не повторяется чаще, сек (чтобы табличка не читалась снова и снова)")]
     public float repeatCooldown = 4f;
     [Range(0.5f, 2f)] public float speechRate = 1.1f;
+    [Tooltip("Сколько секунд ждать ответа движка при запуске, прежде чем пробовать следующий")]
+    public float engineTimeout = 15f;
 
     [Header("Состояние (только чтение)")]
     public bool ready;
-    public bool russian;
     public string status = "не запущен";
-
-    AndroidJavaObject tts;
-    AndroidJavaObject emptyBundle;
-    AndroidJavaObject activity;
-    volatile int initStatus = -99;
-    int engineIndex;
-    string engineName = "";
-    readonly List<string> pending = new List<string>();
-    readonly Dictionary<string, float> lastSaid = new Dictionary<string, float>();
-    int utterance;
+    public string language = "";
+    public string engine = "";
 
     class TtsInit : AndroidJavaProxy
     {
@@ -46,6 +44,23 @@ public class SpeechOutput : MonoBehaviour
         public TtsInit(Action<int> done) : base("android.speech.tts.TextToSpeech$OnInitListener") { this.done = done; }
         public void onInit(int status) { done(status); }
     }
+
+    struct Phrase { public string text; public bool interrupt; }
+
+    AndroidJavaObject activity;
+    Thread worker;
+    readonly AutoResetEvent wake = new AutoResetEvent(false);
+    readonly Queue<Phrase> queue = new Queue<Phrase>();
+    readonly object gate = new object();
+    volatile bool stopWorker;
+    volatile bool readyV;
+    volatile string statusV = "не запущен";
+    volatile string languageV = "";
+    volatile string engineV = "";
+    volatile int initStatus = -99;
+    readonly Dictionary<string, float> lastSaid = new Dictionary<string, float>();
+    bool isAndroid;
+    int utterance;
 
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
     static void Boot()
@@ -62,113 +77,38 @@ public class SpeechOutput : MonoBehaviour
 
     void Start()
     {
-        if (Application.platform != RuntimePlatform.Android)
+        isAndroid = Application.platform == RuntimePlatform.Android;
+        if (!isAndroid)
         {
-            ready = true;
-            status = "не Android: фразы в консоль";
+            readyV = true;
+            statusV = "не Android: фразы в консоль";
             return;
         }
         try
         {
             var unity = new AndroidJavaClass("com.unity3d.player.UnityPlayer");
             activity = unity.GetStatic<AndroidJavaObject>("currentActivity");
-            engineIndex = 0;
-            StartEngine();
         }
         catch (Exception e)
         {
-            status = "TTS недоступен: " + e.Message;
-            Debug.LogWarning("SpeechOutput: " + status);
+            statusV = "TTS недоступен: " + e.Message;
+            Debug.LogWarning("SpeechOutput: " + statusV);
+            return;
         }
-    }
-
-    /// <summary>Создаёт TextToSpeech для движка engines[engineIndex] (пустое имя = движок по умолчанию).</summary>
-    void StartEngine()
-    {
-        if (engines == null || engines.Length == 0) engines = new[] { "" };
-        engineName = engineIndex < engines.Length ? (engines[engineIndex] ?? "") : "";
-        initStatus = -99;
-        if (tts != null) { try { tts.Call("shutdown"); } catch { /* не важно */ } tts = null; }
-        if (engineName.Length == 0)
-            tts = new AndroidJavaObject("android.speech.tts.TextToSpeech", activity, new TtsInit(s => initStatus = s));
-        else
-            tts = new AndroidJavaObject("android.speech.tts.TextToSpeech", activity, new TtsInit(s => initStatus = s), engineName);
-        status = "запуск TTS " + (engineName.Length == 0 ? "(по умолчанию)" : engineName);
-        Debug.Log("SpeechOutput: " + status);
+        statusV = "запуск TTS";
+        worker = new Thread(WorkerMain) { Name = "SpeechOutput TTS", IsBackground = true };
+        worker.Start();
     }
 
     void Update()
     {
-        if (tts != null && !ready && initStatus != -99) FinishInit();
-        if (ready && pending.Count > 0)
-        {
-            var copy = pending.ToArray();
-            pending.Clear();
-            foreach (var p in copy) Say(p, false);
-        }
+        ready = readyV;
+        status = statusV;
+        language = languageV;
+        engine = engineV;
     }
 
-    void FinishInit()
-    {
-        if (initStatus != 0)
-        {
-            Debug.LogWarning($"SpeechOutput: TTS {(engineName.Length == 0 ? "по умолчанию" : engineName)} не запустился, статус {initStatus}");
-            VisionLog.Event("tts_init", $"\"engine\":{VisionLog.Str(engineName)},\"ready\":false,\"initStatus\":{initStatus}");
-            initStatus = -99;
-            if (++engineIndex < engines.Length)
-            {
-                try { StartEngine(); return; }
-                catch (Exception e) { Debug.LogWarning("SpeechOutput: " + e.Message); }
-            }
-            status = "TTS не запустился ни с одним движком";
-            tts = null;
-            return;
-        }
-        try
-        {
-            string engine = "";
-            try { engine = tts.Call<string>("getDefaultEngine") ?? ""; } catch { /* не важно */ }
-            // первый язык из списка, который движок умеет (0 = есть, 1 = есть и страна, 2 = есть и вариант; < 0 = нет)
-            int r = -2;
-            language = "";
-            var tried = new StringBuilder();
-            foreach (string lang in languagesPreferred ?? new[] { "en" })
-            {
-                if (string.IsNullOrEmpty(lang)) continue;
-                r = tts.Call<int>("setLanguage", new AndroidJavaObject("java.util.Locale", lang));
-                if (tried.Length > 0) tried.Append(' ');
-                tried.Append(lang).Append('=').Append(r);
-                if (r >= 0) { language = lang; break; }
-            }
-            if (language.Length == 0)
-            {
-                r = tts.Call<int>("setLanguage", new AndroidJavaObject("java.util.Locale", "en"));
-                if (r >= 0) language = "en";
-            }
-            russian = language == "ru";
-            tts.Call<int>("setSpeechRate", speechRate);
-            emptyBundle = new AndroidJavaObject("android.os.Bundle");
-            ready = language.Length > 0;
-            string who = engineName.Length > 0 ? engineName : engine;
-            status = ready ? "готов (" + language + ", " + who + ")" : "у TTS " + who + " нет нужных языков (" + tried + ")";
-        }
-        catch (Exception e) { status = "TTS язык: " + e.Message; }
-        Debug.Log("SpeechOutput: " + status);
-        VisionLog.Event("tts_init", $"\"engine\":{VisionLog.Str(engineName)},\"ready\":{VisionLog.B(ready)},\"status\":{VisionLog.Str(status)}");
-        if (!ready)
-        {
-            // этот движок без нужных языков: пробуем следующий
-            if (++engineIndex < engines.Length)
-            {
-                try { StartEngine(); return; }
-                catch (Exception e) { Debug.LogWarning("SpeechOutput: " + e.Message); }
-            }
-            tts = null;
-            initStatus = -99;
-        }
-    }
-
-    /// <summary>Произнести фразу. interrupt = true обрывает текущую речь (для срочного), иначе ставится в очередь.</summary>
+    /// <summary>Произнести фразу. interrupt = true обрывает текущую речь (для срочного), иначе ставится в очередь. Главный поток.</summary>
     public static void Speak(string text, bool interrupt = false)
     {
         if (Instance != null) Instance.Say(text, interrupt);
@@ -183,43 +123,216 @@ public class SpeechOutput : MonoBehaviour
         if (!interrupt && lastSaid.TryGetValue(text, out float t) && now - t < repeatCooldown) return;
         lastSaid[text] = now;
 
-        if (!ready)
-        {
-            if (pending.Count < 3) pending.Add(text);
-            return;
-        }
-        if (tts == null)
+        if (!isAndroid || worker == null)
         {
             Debug.Log("TTS: " + text);
+            VisionLog.Event("speak", $"\"text\":{VisionLog.Str(text)},\"interrupt\":{VisionLog.B(interrupt)},\"result\":\"console\"");
             return;
         }
-        try
+        lock (gate)
         {
-            // speak(CharSequence text, int queueMode, Bundle params, String utteranceId): 0 = QUEUE_FLUSH, 1 = QUEUE_ADD
-            int r = tts.Call<int>("speak", text, interrupt ? 0 : 1, emptyBundle, "sonar" + (utterance++));
-            VisionLog.Event("speak", $"\"text\":{VisionLog.Str(text)},\"interrupt\":{VisionLog.B(interrupt)},\"result\":{r},\"engine\":{VisionLog.Str(status)}");
+            if (interrupt) queue.Clear();
+            if (queue.Count < 6) queue.Enqueue(new Phrase { text = text, interrupt = interrupt });
         }
-        catch (Exception e) { Debug.LogWarning("SpeechOutput speak: " + e.Message); }
-    }
-
-    public bool IsSpeaking
-    {
-        get
-        {
-            if (tts == null || !ready) return false;
-            try { return tts.Call<bool>("isSpeaking"); } catch { return false; }
-        }
+        wake.Set();
     }
 
     public void Stop()
     {
-        if (tts == null || !ready) return;
-        try { tts.Call<int>("stop"); } catch { /* не важно */ }
+        lock (gate) queue.Clear();
+        lock (gate) queue.Enqueue(new Phrase { text = "", interrupt = true });   // пустая фраза с interrupt = остановить речь
+        wake.Set();
+    }
+
+    // ---------------------------------------------------------------- поток TTS
+    void WorkerMain()
+    {
+        AndroidJNI.AttachCurrentThread();
+        AndroidJavaObject tts = null, bundle = null;
+        try
+        {
+            tts = StartBestEngine();
+            if (tts == null)
+            {
+                statusV = "TTS не запустился ни с одним движком";
+                return;
+            }
+            bundle = new AndroidJavaObject("android.os.Bundle");
+            readyV = true;
+
+            while (!stopWorker)
+            {
+                wake.WaitOne(500);
+                if (stopWorker) break;
+                while (true)
+                {
+                    Phrase p;
+                    lock (gate)
+                    {
+                        if (queue.Count == 0) break;
+                        p = queue.Dequeue();
+                    }
+                    try
+                    {
+                        if (p.text.Length == 0) { tts.Call<int>("stop"); continue; }
+                        // speak(CharSequence, int queueMode, Bundle, String utteranceId): 0 = QUEUE_FLUSH, 1 = QUEUE_ADD
+                        int r = tts.Call<int>("speak", p.text, p.interrupt ? 0 : 1, bundle, "sonar" + (utterance++));
+                        VisionLog.Event("speak", $"\"text\":{VisionLog.Str(p.text)},\"interrupt\":{VisionLog.B(p.interrupt)},\"result\":{r},\"engine\":{VisionLog.Str(engineV)},\"language\":{VisionLog.Str(languageV)}");
+                    }
+                    catch (Exception e)
+                    {
+                        Debug.LogWarning("SpeechOutput speak: " + e.Message);
+                        VisionLog.Event("speak", $"\"text\":{VisionLog.Str(p.text)},\"error\":{VisionLog.Str(e.Message)}");
+                    }
+                }
+            }
+        }
+        catch (Exception e)
+        {
+            statusV = "поток TTS: " + e.Message;
+            Debug.LogWarning("SpeechOutput: " + statusV);
+        }
+        finally
+        {
+            try { tts?.Call("shutdown"); } catch { /* не важно */ }
+            tts?.Dispose();
+            bundle?.Dispose();
+            AndroidJNI.DetachCurrentThread();
+        }
+    }
+
+    /// <summary>Перебирает движки: первый, который запустился и знает язык из списка; иначе последний запустившийся.</summary>
+    AndroidJavaObject StartBestEngine()
+    {
+        var list = engines ?? new[] { "" };
+        AndroidJavaObject fallback = null;
+        string fallbackName = "", fallbackStatus = "";
+        for (int i = 0; i < list.Length; i++)
+        {
+            string name = list[i] ?? "";
+            AndroidJavaObject tts = StartEngine(name, out int st);
+            if (tts == null)
+            {
+                string why = st == -99 ? "нет ответа за " + engineTimeout + " с" : "статус " + st;
+                Debug.LogWarning($"SpeechOutput: TTS {(name.Length == 0 ? "по умолчанию" : name)} не запустился ({why})");
+                VisionLog.Event("tts_init", $"\"engine\":{VisionLog.Str(name)},\"ready\":false,\"initStatus\":{st}");
+                continue;
+            }
+            string lang = ChooseLanguage(tts, out string tried, out string available);
+            string who = name.Length > 0 ? name : SafeDefaultEngine(tts);
+            string info = $"движок {who}; языки движка: {(available.Length > 0 ? available : "не сообщает")}; пробы: {tried}";
+            VisionLog.Event("tts_init", $"\"engine\":{VisionLog.Str(who)},\"ready\":true,\"language\":{VisionLog.Str(lang)},\"available\":{VisionLog.Str(available)},\"tried\":{VisionLog.Str(tried)}");
+            if (lang.Length > 0)
+            {
+                if (fallback != null) { try { fallback.Call("shutdown"); } catch { } fallback.Dispose(); }
+                try { tts.Call<int>("setSpeechRate", speechRate); } catch { /* не важно */ }
+                languageV = lang;
+                engineV = who;
+                statusV = "готов (" + lang + ", " + who + ")";
+                Debug.Log("SpeechOutput: " + statusV + "; " + info);
+                return tts;
+            }
+            // языков нет: запомним как запасной, но попробуем следующий
+            if (fallback != null) { try { fallback.Call("shutdown"); } catch { } fallback.Dispose(); }
+            fallback = tts;
+            fallbackName = who;
+            fallbackStatus = info;
+        }
+        if (fallback != null)
+        {
+            try { fallback.Call<int>("setSpeechRate", speechRate); } catch { /* не важно */ }
+            languageV = "по умолчанию движка";
+            engineV = fallbackName;
+            statusV = "готов (язык по умолчанию, " + fallbackName + ")";
+            Debug.Log("SpeechOutput: " + statusV + "; " + fallbackStatus);
+        }
+        return fallback;
+    }
+
+    AndroidJavaObject StartEngine(string name, out int status)
+    {
+        initStatus = -99;
+        AndroidJavaObject tts;
+        try
+        {
+            tts = name.Length == 0
+                ? new AndroidJavaObject("android.speech.tts.TextToSpeech", activity, new TtsInit(s => initStatus = s))
+                : new AndroidJavaObject("android.speech.tts.TextToSpeech", activity, new TtsInit(s => initStatus = s), name);
+        }
+        catch (Exception e)
+        {
+            Debug.LogWarning("SpeechOutput: " + e.Message);
+            status = -98;
+            return null;
+        }
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (initStatus == -99 && sw.Elapsed.TotalSeconds < engineTimeout && !stopWorker) Thread.Sleep(50);
+        status = initStatus;
+        if (status == 0) return tts;
+        try { tts.Call("shutdown"); } catch { /* не важно */ }
+        tts.Dispose();
+        return null;
+    }
+
+    static string SafeDefaultEngine(AndroidJavaObject tts)
+    {
+        try { return tts.Call<string>("getDefaultEngine") ?? "?"; } catch { return "?"; }
+    }
+
+    /// <summary>Первый язык из languagesPreferred, который движок принимает (по его списку или по полному тегу). "" = ни один.</summary>
+    string ChooseLanguage(AndroidJavaObject tts, out string tried, out string availableStr)
+    {
+        var available = new List<string>();
+        try
+        {
+            var set = tts.Call<AndroidJavaObject>("getAvailableLanguages");
+            if (set != null)
+            {
+                var it = set.Call<AndroidJavaObject>("iterator");
+                while (it.Call<bool>("hasNext"))
+                {
+                    var loc = it.Call<AndroidJavaObject>("next");
+                    available.Add(loc.Call<string>("toLanguageTag"));
+                }
+            }
+        }
+        catch (Exception e) { Debug.LogWarning("SpeechOutput: getAvailableLanguages: " + e.Message); }
+        available.Sort(StringComparer.OrdinalIgnoreCase);
+        availableStr = string.Join(",", available);
+
+        var localeClass = new AndroidJavaClass("java.util.Locale");
+        var sb = new StringBuilder();
+        foreach (string lang in languagesPreferred ?? new[] { "en" })
+        {
+            if (string.IsNullOrEmpty(lang)) continue;
+            var candidates = new List<string>();
+            string match = available.Find(a => a.Equals(lang, StringComparison.OrdinalIgnoreCase))
+                        ?? available.Find(a => a.StartsWith(lang + "-", StringComparison.OrdinalIgnoreCase));
+            if (match != null) candidates.Add(match);
+            candidates.Add(lang);
+            if (lang == "en") candidates.Add("en-US");
+            if (lang == "ro") candidates.Add("ro-RO");
+            if (lang == "ru") candidates.Add("ru-RU");
+            foreach (string tag in candidates)
+            {
+                int r;
+                try { r = tts.Call<int>("setLanguage", localeClass.CallStatic<AndroidJavaObject>("forLanguageTag", tag)); }
+                catch (Exception e) { r = -97; Debug.LogWarning("SpeechOutput: setLanguage " + tag + ": " + e.Message); }
+                if (sb.Length > 0) sb.Append(' ');
+                sb.Append(tag).Append('=').Append(r);
+                if (r >= 0) { tried = sb.ToString(); return tag; }
+                if (stopWorker) break;
+            }
+        }
+        tried = sb.ToString();
+        return "";
     }
 
     void OnDestroy()
     {
-        if (tts != null) { try { tts.Call("shutdown"); } catch { /* не важно */ } }
+        stopWorker = true;
+        wake.Set();
+        if (worker != null && worker.IsAlive) worker.Join(3000);
         if (Instance == this) Instance = null;
     }
 }

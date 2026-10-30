@@ -154,10 +154,12 @@ public static class OcrImage
     }
 
     /// <summary>Расширить прямоугольник на margin и обрезать по кадру.</summary>
-    public static RectInt Expand(RectInt r, int margin, int w, int h)
+    public static RectInt Expand(RectInt r, int margin, int w, int h) { return Expand(r, margin, margin, w, h); }
+
+    public static RectInt Expand(RectInt r, int marginX, int marginY, int w, int h)
     {
-        int x0 = Math.Max(0, r.xMin - margin), y0 = Math.Max(0, r.yMin - margin);
-        int x1 = Math.Min(w, r.xMax + margin), y1 = Math.Min(h, r.yMax + margin);
+        int x0 = Math.Max(0, r.xMin - marginX), y0 = Math.Max(0, r.yMin - marginY);
+        int x1 = Math.Min(w, r.xMax + marginX), y1 = Math.Min(h, r.yMax + marginY);
         return new RectInt(x0, y0, Math.Max(1, x1 - x0), Math.Max(1, y1 - y0));
     }
 
@@ -200,8 +202,8 @@ public sealed class TesseractRecognizer : ITextRecognizer
     public int targetTextHeight = 32;
     public int maxScale = 4;
     public int maxRegions = 6;
-    /// <summary>Слова первого прохода с уверенностью ниже этой не образуют областей для второго.</summary>
-    public float regionMinConf = 10f;
+    /// <summary>Слова первого прохода с уверенностью ниже этой не образуют областей для второго (0 = любые слова с буквами).</summary>
+    public float regionMinConf = 0f;
 
     /// <summary>Статистика последнего кадра для журнала.</summary>
     public int lastPass1Words, lastRegions, lastPass2Words;
@@ -283,8 +285,10 @@ public sealed class TesseractRecognizer : ITextRecognizer
         foreach (var reg in regions)
         {
             int scale = Mathf.Clamp(Mathf.RoundToInt(targetTextHeight / Mathf.Max(4f, reg.medianHeight)), 1, maxScale);
-            int margin = Mathf.Max(8, Mathf.RoundToInt(reg.medianHeight * 0.8f));
-            RectInt crop = OcrImage.Expand(reg.rect, margin, width, height);
+            // поле вокруг области: по горизонтали щедрое (первый проход часто теряет начало строки), по вертикали - одна строка
+            int marginX = Mathf.Max(24, Mathf.RoundToInt(reg.medianHeight * 4f));
+            int marginY = Mathf.Max(10, Mathf.RoundToInt(reg.medianHeight * 1.2f));
+            RectInt crop = OcrImage.Expand(reg.rect, marginX, marginY, width, height);
             long pixels = (long)crop.width * scale * crop.height * scale;
             if (pixels > 4_000_000L) scale = Mathf.Max(1, (int)Math.Sqrt(4_000_000.0 / ((long)crop.width * crop.height)));
 
