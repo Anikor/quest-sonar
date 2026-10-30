@@ -29,11 +29,13 @@ public class DepthSampler : MonoBehaviour
     public bool removeHands = true;
     [Tooltip("Если самопроверка даёт большую ошибку, переключите в Play-режиме")]
     public bool flipY = false;
-    [Tooltip("Соглашение по Z: 0 z=d, 1 z=2d-1, 2 z=1-d, 3 z=2(1-d)-1")]
-    public int zMode = 0;
+    [Tooltip("Соглашение по глубине: 0-3 глубина как NDC-z (разные варианты), 4-7 линейная глубина через _EnvironmentDepthZBufferParams")]
+    public int zMode = 4;   // найдено на Quest 3 (Horizon OS, 2026-10-24): eye=0, flipY=false, z=4 -> ошибка 2.7 см
     [Tooltip("Сам перебирает eye/flipY/zMode и берёт первую комбинацию с ошибкой < 5 см. Нужен стоя неподвижно лицом к комнате")]
-    public bool autoSearch = true;
+    public bool autoSearch = false;   // включайте только если ошибка снова большая
     public string status = "";
+    [Tooltip("Поза камеры глубины берётся из положения глаза (OVRCameraRig), а не из глобальных матриц Meta. Левый хват переключает на шлеме.")]
+    public bool poseFromHead = true;
 
     [Header("Самопроверка относительно Raycast")]
     public bool calibrate = true;
@@ -60,6 +62,10 @@ public class DepthSampler : MonoBehaviour
     ComputeShader cs;
     int kernel;
     Transform head;
+    Transform leftEye, rightEye;
+    readonly Matrix4x4[] kMat = new Matrix4x4[2];
+    readonly bool[] haveK = new bool[2];
+    float poseLogTimer;
     EnvironmentRaycastManager raycaster;
     readonly List<Matrix4x4> matrices = new();
     readonly List<float> errors = new();
@@ -83,6 +89,8 @@ public class DepthSampler : MonoBehaviour
         yield return SonarCommon.WaitUntilReady();
         head = SonarCommon.FindHead();
         raycaster = FindFirstObjectByType<EnvironmentRaycastManager>();
+        var rig = FindFirstObjectByType<OVRCameraRig>();
+        if (rig != null) { leftEye = rig.leftEyeAnchor; rightEye = rig.rightEyeAnchor; }
 
         var mgr = FindFirstObjectByType<EnvironmentDepthManager>();
         if (mgr == null) mgr = gameObject.AddComponent<EnvironmentDepthManager>();
@@ -153,12 +161,29 @@ public class DepthSampler : MonoBehaviour
             NextCombo();
         }
 
+        // Поза камеры глубины. Матрица Meta = K * (мир -> глаз). K (проекция и соглашения осей) постоянна,
+        // запоминаем её по первой матрице, а дальше берём ТЕКУЩУЮ позу глаза. Это лечит «застывшие» матрицы.
+        Matrix4x4 M = matrices[slice];
+        Transform et = slice == 1 ? rightEye : leftEye;
+        if (et != null && slice < 2)
+        {
+            Matrix4x4 W = et.worldToLocalMatrix;
+            if (!haveK[slice]) { kMat[slice] = M * W.inverse; haveK[slice] = true; }
+            DiagPose(M, et);
+            if (poseFromHead) M = kMat[slice] * W;
+        }
+        if (OVRInput.GetDown(OVRInput.Button.PrimaryHandTrigger))
+        {
+            poseFromHead = !poseFromHead;
+            Debug.Log("DepthSampler: poseFromHead = " + poseFromHead);
+        }
+
         frame++;
         int baseIndex = (frame % Mathf.Max(1, historyFrames)) * gridW * gridH;
         CurrentSlot = frame % Mathf.Max(1, historyFrames);
         cs.SetTexture(kernel, "_Depth", tex);
         cs.SetBuffer(kernel, "_Points", PointsBuffer);
-        cs.SetMatrix("_InvVP", matrices[slice].inverse);
+        cs.SetMatrix("_InvVP", M.inverse);
         cs.SetVector("_CamPos", head.position);
         cs.SetInt("_GridW", gridW);
         cs.SetInt("_GridH", gridH);
@@ -168,6 +193,8 @@ public class DepthSampler : MonoBehaviour
         cs.SetInt("_BaseIndex", baseIndex);
         cs.SetInt("_FlipY", flipY ? 1 : 0);
         cs.SetInt("_ZMode", zMode);
+        cs.SetMatrix("_VP", M);
+        cs.SetVector("_ZBuf", Shader.GetGlobalVector("_EnvironmentDepthZBufferParams"));
         cs.SetVector("_Jitter", new Vector2(Halton(frame, 2), Halton(frame, 3)));
         cs.SetFloat("_MinDist", minDistance);
         cs.SetFloat("_MaxDist", maxDistance);
@@ -186,6 +213,18 @@ public class DepthSampler : MonoBehaviour
             pointsThisSecond = 0;
             rateTimer = 0f;
         }
+    }
+
+    void DiagPose(Matrix4x4 raw, Transform et)
+    {
+        poseLogTimer += Time.unscaledDeltaTime;
+        if (poseLogTimer < 1f) return;
+        poseLogTimer = 0f;
+        Vector4 ch = raw.inverse * new Vector4(0f, 0f, 1f, 0f);   // центр камеры глубины из матрицы
+        Vector3 cam = new Vector3(ch.x, ch.y, ch.z) / ch.w;
+        float fps = 1f / Mathf.Max(Time.unscaledDeltaTime, 1e-4f);
+        Debug.Log($"DepthSampler POSE: камера из матрицы {cam.ToString("F2")}, глаз {et.position.ToString("F2")}, " +
+                  $"расхождение {Vector3.Distance(cam, et.position) * 100f:F0} см, poseFromHead={poseFromHead}, ~{fps:F0} FPS");
     }
 
     void OnReadback(AsyncGPUReadbackRequest req)
@@ -258,8 +297,8 @@ public class DepthSampler : MonoBehaviour
         int eyes = Mathf.Max(1, Mathf.Min(2, matrices.Count));
         for (int e = 0; e < eyes; e++)
             for (int f = 0; f < 2; f++)
-                for (int z = 0; z < 4; z++)
-                    combos.Add(new Vector3Int(e, f, z));
+                for (int zi = 0; zi < 8; zi++)
+                    combos.Add(new Vector3Int(e, f, (zi + 4) % 8));   // сначала режимы 4-7 (линейная глубина)
 
         // удачная комбинация с прошлого запуска проверяется первой
         var parts = PlayerPrefs.GetString("DepthSamplerCombo", "").Split(',');

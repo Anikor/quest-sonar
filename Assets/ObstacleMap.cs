@@ -2,12 +2,11 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Text;
 using Meta.XR;
-using Meta.XR.MRUtilityKit;
 using UnityEngine;
 
 /// <summary>
 /// Карта препятствий в реальном времени (2D occupancy grid, вид сверху, мировые координаты).
-/// Только Depth API (EnvironmentRaycastManager), без привязки к разметке комнаты. Подходит для ходьбы.
+/// Только Depth API (EnvironmentRaycastManager), без MRUK. Подходит для ходьбы.
 ///
 ///  1) Каждый кадр пускается пачка лучей из головы в поле зрения (последовательность Хэлтона):
 ///     столько, сколько влезает в scanBudgetMs, либо фиксированные raysPerFrame (useTimeBudget = false).
@@ -17,9 +16,6 @@ using UnityEngine;
 ///  4) Высота разбита на 3 слоя, чтобы луч над низким предметом не стирал его.
 ///  5) Высота пола учится по лучам вниз.
 ///  6) Минимап (вверх = направление взгляда) + плитки на полу + API для звука/вибрации.
-///  7) Зоны прохода (слева / прямо / справа): по карте считается, сколько метров можно пройти в каждой зоне,
-///     и ищутся проёмы (двери, проходы) в стенах; этим пользуется AudioSonar. Дверные проёмы берутся также
-///     из модели комнаты (MR Utility Kit), если комната размечена в настройках шлема.
 /// Скрипт создаётся сам при старте сцены.
 /// </summary>
 public class ObstacleMap : MonoBehaviour
@@ -81,37 +77,6 @@ public class ObstacleMap : MonoBehaviour
     public float warnDistance = 1.2f;
     public float dangerDistance = 0.6f;
 
-    [Header("Зоны прохода (для звука)")]
-    [Tooltip("На сколько зон по горизонтали делится обзор: 3 = слева / прямо / справа, 2 = слева / справа")]
-    public int zoneCount = 3;
-    [Tooltip("Полный угол обзора зон, градусы")]
-    public float zoneYawRange = 120f;
-    [Tooltip("Ширина «коридора» при проверке, пройдёт ли человек, м")]
-    public float bodyWidth = 0.6f;
-    [Tooltip("Свободно хотя бы столько метров = «путь свободен»")]
-    public float clearDistance = 2f;
-    [Tooltip("Свободно меньше этого = зона перекрыта")]
-    public float blockedDistance = 1f;
-    [Tooltip("Доля просмотренных датчиком клеток вдоль пути, чтобы верить, что зона свободна")]
-    [Range(0f, 1f)] public float zoneMinSeen = 0.25f;
-    [Tooltip("Дальше этого зоны не проверяются, м")]
-    public float zoneRange = 4f;
-    public int zoneRaysPerZone = 5;
-
-    [Header("Проёмы: двери и проходы")]
-    [Tooltip("Искать проёмы в стенах по карте: пара высоких препятствий, между которыми видно насквозь")]
-    public bool detectPassages = true;
-    [Tooltip("Брать дверные проёмы из модели комнаты (MR Utility Kit), если комната размечена в настройках шлема")]
-    public bool useScenePassages = true;
-    public float passageMinWidth = 0.6f;
-    public float passageMaxWidth = 1.6f;
-    [Tooltip("За проёмом должно быть свободно хотя бы столько метров (иначе это ниша или шкаф)")]
-    public float passageMinDepth = 1f;
-    [Tooltip("Дальше этого проёмы не ищутся, м")]
-    public float passageRange = 5f;
-    [Tooltip("Полуширина скана проёмов, градусы от взгляда в каждую сторону")]
-    public float passageScanYaw = 90f;
-
     [Header("Состояние (только чтение)")]
     public float floorY;
     public int occupiedCount;
@@ -121,11 +86,6 @@ public class ObstacleMap : MonoBehaviour
     public float raysPerSecond;
     [Tooltip("Сколько мс ушло на лучи в последнем кадре")]
     public float scanMs;
-    [Tooltip("Зона, куда можно идти (-1 = свободной нет)")]
-    public int bestZone = -1;
-    [Tooltip("Все зоны перекрыты ближе blockedDistance")]
-    public bool allBlocked;
-    public int passageCount;
 
     /// <summary>Статусы лучей за последний кадр (для диагностики: почему нет попаданий).</summary>
     public readonly Dictionary<EnvironmentRaycastHitStatus, int> statusCounts = new();
@@ -133,22 +93,14 @@ public class ObstacleMap : MonoBehaviour
     /// <summary>Каждая точка попадания луча в мировых координатах (до фильтра по высоте). Нужна для облака точек.</summary>
     public event System.Action<Vector3> OnDepthHit;
 
-    /// <summary>Зоны прохода (обновляются StatsInterval раз в секунду). null, пока карта не готова.</summary>
-    public NavZones.Zone[] Zones { get; private set; }
-
-    /// <summary>Проёмы (двери, проходы) в радиусе passageRange: по карте и из модели комнаты.</summary>
-    public readonly List<NavZones.Passage> passages = new();
-
     const int Layers = 3;
     static readonly float[] LayerTop = { 0.6f, 1.2f, float.MaxValue };
 
     const float MinHitDistance = 0.2f;    // ближе - считаем помехой (руки, шлем), не точкой
     const float CarveStart = 0.25f;       // с какого расстояния от головы начинаем "очищать" клетки вдоль луча
     const float SeenEps = 0.05f;          // |log-odds| меньше этого = клетка пустая, ничего не знаем
-    const float StatsInterval = 0.1f;     // как часто обновлять статистику, минимап, плитки и зоны, сек
-    const float PassageInterval = 0.5f;   // как часто искать проёмы, сек
+    const float StatsInterval = 0.1f;     // как часто обновлять статистику, минимап и плитки, сек
     const float PruneInterval = 2f;       // как часто удалять пустые и далёкие клетки, сек
-    const float PassageScanStepDeg = 2f;  // шаг полярного скана проёмов
 
     class Cell { public float[] l = new float[Layers]; }
 
@@ -167,10 +119,9 @@ public class ObstacleMap : MonoBehaviour
     TextMesh mapLabel;
     Vector3 lastFwd = Vector3.forward;
     int sampleIndex;
-    float tick, pruneTick, passageTick;
+    float tick, pruneTick;
     int raysThisSecondCounter;
     float rayTimer;
-    NavZones.CellQuery cellQuery;
 
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
     static void Boot()
@@ -183,7 +134,6 @@ public class ObstacleMap : MonoBehaviour
     IEnumerator Start()
     {
         Instance = this;
-        cellQuery = QueryCell;
         matGreen = MakeMat(Color.green);
         matYellow = MakeMat(Color.yellow);
         matRed = MakeMat(Color.red);
@@ -240,16 +190,8 @@ public class ObstacleMap : MonoBehaviour
             if (memorySeconds > 0f) DecayMap(tick);
             tick = 0f;
             UpdateStats();
-            UpdateZones();
             if (showMinimap) DrawMinimap();
             if (show3DTiles) Update3DTiles();
-        }
-
-        passageTick += Time.deltaTime;
-        if (passageTick >= PassageInterval)
-        {
-            passageTick = 0f;
-            UpdatePassages();
         }
 
         pruneTick += Time.deltaTime;
@@ -400,143 +342,6 @@ public class ObstacleMap : MonoBehaviour
             index /= b;
         }
         return r;
-    }
-
-    // ---------------------------------------------------------------- зоны прохода и проёмы
-    /// <summary>Что карта знает о клетке: для NavZones.</summary>
-    NavZones.Cell QueryCell(Vector2Int key)
-    {
-        if (!cells.TryGetValue(key, out var c)) return NavZones.Cell.Unknown;
-        if (c.l[Layers - 1] >= occThreshold) return NavZones.Cell.Tall;          // выше 1.2 м: стены, косяки, шкафы
-        for (int i = 0; i < Layers - 1; i++) if (c.l[i] >= occThreshold) return NavZones.Cell.Low;
-        return IsCellSeen(c) ? NavZones.Cell.Free : NavZones.Cell.Unknown;
-    }
-
-    void UpdateZones()
-    {
-        int n = Mathf.Max(1, zoneCount);
-        if (Zones == null || Zones.Length != n) Zones = new NavZones.Zone[n];
-        NavZones.EvaluateZones(cellQuery, cellSize, head.position, head.forward, zoneYawRange, zoneRaysPerZone,
-                               bodyWidth, zoneRange, CarveStart, Zones);
-        bestZone = NavZones.BestZone(Zones, clearDistance, zoneMinSeen);
-        allBlocked = true;
-        for (int i = 0; i < n; i++)
-            if (Zones[i].free >= blockedDistance) { allBlocked = false; break; }
-    }
-
-    void UpdatePassages()
-    {
-        passages.Clear();
-        if (detectPassages)
-            NavZones.FindPassages(cellQuery, cellSize, head.position, head.forward, passageScanYaw, PassageScanStepDeg,
-                                  passageRange, passageMinWidth, passageMaxWidth, passageMinDepth, CarveStart, passages);
-        if (useScenePassages) AddScenePassages();
-        passageCount = passages.Count;
-    }
-
-    /// <summary>Дверные проёмы из модели комнаты (MR Utility Kit). Если проём уже найден по карте, он только помечается.</summary>
-    void AddScenePassages()
-    {
-        var mruk = MRUK.Instance;
-        if (mruk == null || !mruk.IsInitialized || mruk.Rooms == null) return;
-
-        Vector3 hp = head.position;
-        foreach (var room in mruk.Rooms)
-        {
-            if (room == null) continue;
-            foreach (var a in room.Anchors)
-            {
-                if (a == null || (a.Label & MRUKAnchor.SceneLabels.DOOR_FRAME) == 0) continue;
-
-                Vector3 c = a.PlaneRect.HasValue ? a.transform.TransformPoint(a.PlaneRect.Value.center) : a.transform.position;
-                c.y = floorY;
-                float d = Mathf.Sqrt(HorizSqrDistance(c, hp));
-                if (d > passageRange) continue;
-
-                int near = -1;
-                for (int i = 0; i < passages.Count; i++)
-                    if (HorizSqrDistance(passages[i].center, c) < 1f) { near = i; break; }
-
-                if (near >= 0)
-                {
-                    var p = passages[near];
-                    p.fromScene = true;
-                    passages[near] = p;
-                }
-                else
-                {
-                    passages.Add(new NavZones.Passage
-                    {
-                        center = c,
-                        width = a.PlaneRect.HasValue ? a.PlaneRect.Value.width : 0.9f,
-                        distance = d,
-                        depthBeyond = 0f,
-                        open = false,
-                        fromScene = true
-                    });
-                }
-            }
-        }
-    }
-
-    /// <summary>Ближайший проём (false, если проёмов нет).</summary>
-    public bool TryGetNearestPassage(out NavZones.Passage best)
-    {
-        best = default;
-        float bd = float.MaxValue;
-        foreach (var p in passages)
-            if (p.distance < bd) { bd = p.distance; best = p; }
-        return bd < float.MaxValue;
-    }
-
-    /// <summary>Угол на точку относительно взгляда по горизонтали, градусы: минус = слева, плюс = справа.</summary>
-    public float YawTo(Vector3 world)
-    {
-        if (head == null) return 0f;
-        Vector3 f = head.forward;
-        f.y = 0f;
-        Vector3 to = world - head.position;
-        to.y = 0f;
-        if (f.sqrMagnitude < 1e-6f || to.sqrMagnitude < 1e-6f) return 0f;
-        return Vector3.SignedAngle(f, to, Vector3.up);
-    }
-
-    public string ZoneName(int i)
-    {
-        if (Zones == null || i < 0 || i >= Zones.Length) return "?";
-        if (Zones.Length == 3) return i == 0 ? "слева" : i == 1 ? "прямо" : "справа";
-        if (Zones.Length == 2) return i == 0 ? "слева" : "справа";
-        return $"{Zones[i].CenterYaw:F0}°";
-    }
-
-    /// <summary>Строка для HUD: состояние зон и ближайший проём.</summary>
-    public string ZonesText()
-    {
-        if (Zones == null) return "Зоны: карта не готова";
-        var sb = new StringBuilder("Зоны: ");
-        for (int i = 0; i < Zones.Length; i++)
-        {
-            var z = Zones[i];
-            string state;
-            if (z.free >= clearDistance) state = z.seen >= zoneMinSeen ? "свободно" : "не видно";
-            else if (z.free < blockedDistance) state = $"ПЕРЕКРЫТО {z.free:F1}";
-            else state = $"{z.free:F1} м";
-            if (i > 0) sb.Append(" | ");
-            sb.Append(ZoneName(i)).Append(' ').Append(state);
-        }
-        if (bestZone >= 0) sb.Append("  -> ").Append(ZoneName(bestZone));
-        else if (allBlocked) sb.Append("  -> ТУПИК");
-
-        if (TryGetNearestPassage(out var p))
-        {
-            float yaw = YawTo(p.center);
-            sb.Append($"\nПроём: {p.distance:F1} м, {Mathf.Abs(yaw):F0}° {(yaw < -5f ? "влево" : yaw > 5f ? "вправо" : "прямо")}, ширина {p.width:F1} м");
-            sb.Append(p.open ? " (виден насквозь)" : " (дверь из модели комнаты)");
-            if (p.open && p.fromScene) sb.Append(" [и в модели]");
-            if (passages.Count > 1) sb.Append($"  всего {passages.Count}");
-        }
-        else sb.Append("\nПроёмов не видно");
-        return sb.ToString();
     }
 
     // ---------------------------------------------------------------- публичный API
@@ -705,16 +510,6 @@ public class ObstacleMap : MonoBehaviour
             }
         }
 
-        // свободный путь: зелёный пунктир из центра; проёмы: голубые квадраты
-        if (bestZone >= 0 && Zones != null && bestZone < Zones.Length)
-        {
-            var z = Zones[bestZone];
-            var pathC = new Color32(80, 255, 80, 255);
-            for (float d = 0.5f; d <= z.free; d += 0.3f) PaintMark(hp + z.freeDir * d, hp, fwd, right, n, half, pathC, 0);
-        }
-        var passC = new Color32(0, 220, 255, 255);
-        foreach (var p in passages) PaintMark(p.center, hp, fwd, right, n, half, passC, 1);
-
         // игрок в центре + метка направления
         int c0 = n / 2;
         for (int dy = -1; dy <= 1; dy++)
@@ -729,25 +524,10 @@ public class ObstacleMap : MonoBehaviour
         {
             var sb = new StringBuilder();
             sb.AppendLine(nearestDistance >= 0 ? $"Ближайшее: {nearestDistance:F1} м" : "Ближайшее: -");
-            sb.Append($"Клеток: {occupiedCount}  лучи {lastHits}/{lastRays}  {raysPerSecond:F0}/с  проёмов {passageCount}");
+            sb.Append($"Клеток: {occupiedCount}  лучи {lastHits}/{lastRays}  {raysPerSecond:F0}/с");
             mapLabel.text = sb.ToString();
             mapLabel.color = LevelColor();
         }
-    }
-
-    /// <summary>Закрашивает на минимапе квадрат (2r+1) пикселей вокруг мировой точки.</summary>
-    void PaintMark(Vector3 world, Vector3 hp, Vector3 fwd, Vector3 right, int n, float half, Color32 col, int r)
-    {
-        Vector3 off = world - hp;
-        int x = Mathf.FloorToInt(Vector3.Dot(off, right) / cellSize + half);
-        int y = Mathf.FloorToInt(Vector3.Dot(off, fwd) / cellSize + half);
-        for (int dy = -r; dy <= r; dy++)
-            for (int dx = -r; dx <= r; dx++)
-            {
-                int px = x + dx, py = y + dy;
-                if (px < 0 || py < 0 || px >= n || py >= n) continue;
-                mapPixels[py * n + px] = col;
-            }
     }
 
     // ---------------------------------------------------------------- плитки на полу

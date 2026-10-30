@@ -127,12 +127,14 @@ public class DepthPointCloud : MonoBehaviour
     public float gpuPointSize = 0.02f;
     Material gpuMat;
     bool gpuActive;
+    bool gpuLatched;   // после первой успешной самопроверки GPU-облако остаётся включённым
 
     void UpdateGpuCloud()
     {
         var s = DepthSampler.Instance;
-        bool want = useGpuCloud && s != null && s.ready && s.PointsBuffer != null
-                    && s.calibErrorMedian >= 0f && s.calibErrorMedian <= gpuMaxCalibError;
+        bool verified = s != null && s.calibErrorMedian >= 0f && s.calibErrorMedian <= gpuMaxCalibError;
+        if (verified) gpuLatched = true;   // математика проверена; скачки ошибки при движении головы это рассинхрон кадров, а не формула
+        bool want = useGpuCloud && s != null && s.ready && s.PointsBuffer != null && gpuLatched;
 
         if (want && gpuMat == null)
         {
