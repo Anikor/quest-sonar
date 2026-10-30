@@ -259,7 +259,8 @@ public class SignReader : MonoBehaviour
                 nextScan = now + scanInterval;
                 frameHeadPos = head.position;
                 frameHeadRot = head.rotation;
-                frameFile = saveFrames ? VisionLog.SaveFrame(frame.gray, frame.width, frame.height, $"scan-{scans + 1:0000}") : null;
+                // кадр сохраняется в журнал, если включено saveFrames или это чтение по хвату (чтобы разобрать именно эту табличку)
+                frameFile = (saveFrames || speakAfterScan) ? VisionLog.SaveFrame(frame.gray, frame.width, frame.height, $"scan-{scans + 1:0000}") : null;
                 VisionLog.Event("capture", $"\"scan\":{scans + 1},\"file\":{VisionLog.Str(frameFile)},\"w\":{frame.width},\"h\":{frame.height}," +
                                            $"\"headPos\":{VisionLog.V(frameHeadPos)},\"headRot\":{VisionLog.Q(frameHeadRot)}," +
                                            $"\"camPos\":{VisionLog.V(frame.cameraPose.position)},\"camRot\":{VisionLog.Q(frame.cameraPose.rotation)}," +
@@ -348,7 +349,7 @@ public class SignReader : MonoBehaviour
         var sb = new StringBuilder(2048);
         sb.Append($"\"scan\":{scans},\"file\":{VisionLog.Str(frameFile)},\"ms\":{VisionLog.F(lastOcrMs)}");
         if (ocr is TesseractRecognizer t)
-            sb.Append($",\"pass1Words\":{t.lastPass1Words},\"regions\":{t.lastRegions},\"pass2Words\":{t.lastPass2Words},\"pass1Ms\":{VisionLog.F(t.lastPass1Ms)},\"pass2Ms\":{VisionLog.F(t.lastPass2Ms)}");
+            sb.Append($",\"pass1Words\":{t.lastPass1Words},\"regions\":{t.lastRegions},\"pass2Words\":{t.lastPass2Words},\"numberWords\":{t.lastNumberWords},\"pass1Ms\":{VisionLog.F(t.lastPass1Ms)},\"pass2Ms\":{VisionLog.F(t.lastPass2Ms)}");
         sb.Append(",\"words\":[");
         for (int i = 0; i < words.Count; i++)
         {

@@ -230,6 +230,10 @@ public sealed class TesseractRecognizer : ITextRecognizer
     public bool useWhitelist = true;
     /// <summary>Искать и светлый текст на тёмном фоне: первый проход повторяется на инвертированном кадре (+0.5-1 с).</summary>
     public bool invertedPass = true;
+    /// <summary>Номер над текстом: полоса над каждой областью текста читается отдельно (обе полярности, только цифры и «-/»).
+    /// Номера кабинетов на тёмной полосе над названием (3-212) общий проход пропускал.</summary>
+    public bool numberStrip = true;
+    public int lastNumberWords;
     public int targetTextHeight = 32;
     public int maxScale = 4;
     public int maxRegions = 4;   // по журналу: 6 областей × увеличение до ×4 давали до 4.6 с на кадр
@@ -360,6 +364,50 @@ public sealed class TesseractRecognizer : ITextRecognizer
             }
             lineBase += 100;
         }
+
+        // полоса с номером над областью текста: высота ~2.5 строки, читается как одна строка, только цифры
+        lastNumberWords = 0;
+        if (numberStrip)
+        {
+            try
+            {
+                if (useWhitelist) api.Call<bool>("setVariable", "tessedit_char_whitelist", "0123456789-/");
+                var nums = new List<OcrWord>();
+                int shown = 0;
+                foreach (var reg in regions)
+                {
+                    if (shown++ >= 3) break;
+                    int h = Mathf.Max(8, Mathf.RoundToInt(reg.medianHeight));
+                    int y0 = Math.Max(0, reg.rect.yMin - h * 3);
+                    int y1 = Math.Max(y0 + 1, reg.rect.yMin - h / 4);
+                    int x0 = Math.Max(0, reg.rect.xMin - h), x1 = Math.Min(width, reg.rect.xMax + h);
+                    if (y1 - y0 < 8 || x1 - x0 < 16) continue;
+                    var strip = new RectInt(x0, y0, x1 - x0, y1 - y0);
+                    int scale = Mathf.Clamp(Mathf.RoundToInt(targetTextHeight / Mathf.Max(8f, (y1 - y0) * 0.5f)), 1, 3);
+                    for (int pol = 0; pol < 2; pol++)
+                    {
+                        byte[] src = pol == 1 ? inv : img;
+                        if (src == null) continue;
+                        nums.Clear();
+                        byte[] sub = OcrImage.CropScale(src, width, height, strip, scale);
+                        RunPass(sub, strip.width * scale, strip.height * scale, 7 /* PSM_SINGLE_LINE */, nums, strip.x, strip.y, scale, lineBase, 3, pol == 1);
+                        foreach (var o in nums)
+                        {
+                            int digits = 0;
+                            foreach (char c in o.text) if (char.IsDigit(c)) digits++;
+                            if (digits >= 2 && o.confidence >= 50f) { result.Add(o); lastNumberWords++; }
+                        }
+                        lineBase += 100;
+                    }
+                }
+            }
+            catch (Exception e) { Status = "Tesseract (номера): " + e.Message; }
+            finally
+            {
+                if (useWhitelist) { try { api.Call<bool>("setVariable", "tessedit_char_whitelist", Whitelist); } catch { /* не важно */ } }
+            }
+        }
+
         OcrImage.Dedupe(result);   // области с полями перекрываются, слово на границе попадает в обе
         lastPass2Ms = (float)sw.Elapsed.TotalMilliseconds;
     }
