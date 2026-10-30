@@ -20,3 +20,6 @@
 *.aab
 .vs/
 .idea/
+
+# Сборка на этом ПК: ProjectSettings создаётся скриптом Assets/Editor/BuildQuest.cs, на ПК со шлемом своя папка
+/ProjectSettings/
