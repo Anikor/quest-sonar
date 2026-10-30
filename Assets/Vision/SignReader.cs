@@ -25,8 +25,8 @@ public class SignReader : MonoBehaviour
 
     [Header("Распознавание")]
     public bool readSigns = true;
-    [Tooltip("Языки Tesseract через плюс; файлы Assets/StreamingAssets/tessdata/<язык>.traineddata")]
-    public string languages = "rus+eng";
+    [Tooltip("Языки Tesseract через плюс; файлы Assets/StreamingAssets/tessdata/<язык>.traineddata (есть ron, rus, eng). Больше языков = медленнее и больше путаницы похожих букв")]
+    public string languages = "ron+eng";
     [Tooltip("Как часто снимать кадр и распознавать, сек (само распознавание 0.5-3 с в фоне)")]
     public float scanInterval = 2.5f;
     [Tooltip("Слова с уверенностью ниже этой выбрасываются (0..100)")]

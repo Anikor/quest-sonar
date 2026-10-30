@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Text;
 using UnityEngine;
 
 /// <summary>
@@ -14,8 +15,10 @@ public class SpeechOutput : MonoBehaviour
 {
     public static SpeechOutput Instance { get; private set; }
 
-    [Tooltip("Язык голоса (java.util.Locale). Если такого голоса на шлеме нет, берётся en")]
-    public string language = "ru";
+    [Tooltip("Языки голоса по порядку предпочтения (java.util.Locale): берётся первый, который есть у движка на шлеме")]
+    public string[] languagesPreferred = { "ro", "ru", "en" };
+    [Tooltip("Какой язык выбран (только чтение)")]
+    public string language = "";
     [Tooltip("Движки TTS по порядку: пусто = движок по умолчанию; на Quest 3 системный движок называется com.oculus.systemintelligence (HzOS Text-to-Speech)")]
     public string[] engines = { "", "com.oculus.systemintelligence", "com.google.android.tts" };
     [Tooltip("Одна и та же фраза не повторяется чаще, сек (чтобы табличка не читалась снова и снова)")]
@@ -125,14 +128,29 @@ public class SpeechOutput : MonoBehaviour
         {
             string engine = "";
             try { engine = tts.Call<string>("getDefaultEngine") ?? ""; } catch { /* не важно */ }
-            int r = tts.Call<int>("setLanguage", new AndroidJavaObject("java.util.Locale", language));
-            russian = language == "ru" && r >= 0;
-            if (r < 0) r = tts.Call<int>("setLanguage", new AndroidJavaObject("java.util.Locale", "en"));
+            // первый язык из списка, который движок умеет (0 = есть, 1 = есть и страна, 2 = есть и вариант; < 0 = нет)
+            int r = -2;
+            language = "";
+            var tried = new StringBuilder();
+            foreach (string lang in languagesPreferred ?? new[] { "en" })
+            {
+                if (string.IsNullOrEmpty(lang)) continue;
+                r = tts.Call<int>("setLanguage", new AndroidJavaObject("java.util.Locale", lang));
+                if (tried.Length > 0) tried.Append(' ');
+                tried.Append(lang).Append('=').Append(r);
+                if (r >= 0) { language = lang; break; }
+            }
+            if (language.Length == 0)
+            {
+                r = tts.Call<int>("setLanguage", new AndroidJavaObject("java.util.Locale", "en"));
+                if (r >= 0) language = "en";
+            }
+            russian = language == "ru";
             tts.Call<int>("setSpeechRate", speechRate);
             emptyBundle = new AndroidJavaObject("android.os.Bundle");
-            ready = r >= 0;
+            ready = language.Length > 0;
             string who = engineName.Length > 0 ? engineName : engine;
-            status = ready ? (russian ? "готов (ru, " + who + ")" : "готов (en, русского голоса нет, " + who + ")") : "у TTS " + who + " нет ни ru, ни en (код " + r + ")";
+            status = ready ? "готов (" + language + ", " + who + ")" : "у TTS " + who + " нет нужных языков (" + tried + ")";
         }
         catch (Exception e) { status = "TTS язык: " + e.Message; }
         Debug.Log("SpeechOutput: " + status);

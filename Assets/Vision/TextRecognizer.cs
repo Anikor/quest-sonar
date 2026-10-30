@@ -214,8 +214,10 @@ public sealed class TesseractRecognizer : ITextRecognizer
     public string Status { get; private set; } = "не запущен";
     public string Version { get; private set; } = "?";
 
+    // кириллица, латиница, румынские буквы (ăâîșț и варианты с седилью şţ), цифры и немного знаков
     const string Whitelist = "АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯабвгдеёжзийклмнопрстуфхцчшщъыьэюя" +
-                             "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 -.,:/№()";
+                             "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz" +
+                             "ĂÂÎȘȚăâîșțŞŢşţ0123456789 -.,:/№()";
 
     public bool Init(string dataDir, string languages)
     {

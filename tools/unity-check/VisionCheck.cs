@@ -101,6 +101,15 @@ public static class VisionCheck
         n = Passages(niche, res);
         Check(n == 0, $"ниша 0.5 м не считается дверью (найдено {n})");
 
+        // дверь с «низкими» клетками в проёме (порог / ошибка пола): без tallOnly не находится, с tallOnly находится
+        var sill = Room(1f, 0.9f);
+        sill.Fill(0.6f, 2.95f, 1.4f, 3.15f, NavZones.Cell.Low);
+        int nPlain = Passages(sill, res);
+        int nTall = NavZones.FindPassages(sill.Query, Cs, Vector3.zero, Vector3.forward, 90f, 2f, 5f, 0.6f, 1.6f, 1f, 0.25f, res, true);
+        Check(nPlain == 0 && nTall == 1, $"дверь с порогом из низких клеток: обычный поиск {nPlain}, только по высоким {nTall} (ожидается 0 и 1)");
+        n = NavZones.FindPassages(Room(1f, 0.9f, NavZones.Cell.Low).Query, Cs, Vector3.zero, Vector3.forward, 90f, 2f, 5f, 0.6f, 1.6f, 1f, 0.25f, res, true);
+        Check(n == 0, $"tallOnly: зазор между низкой мебелью по-прежнему не дверь ({n})");
+
         var slot = new Grid();
         slot.Fill(-3f, -3f, 3f, 3f, NavZones.Cell.Free);
         slot.Wall(-1f, 2f, -0.2f, 2f);

@@ -34,10 +34,14 @@ public class DoorFinder : MonoBehaviour
     public float minDepthBeyond = 1f;
     [Tooltip("Проём должен быть найден в стольких сканах подряд, чтобы считаться дверью")]
     public int confirmScans = 2;
+    [Tooltip("Низкие препятствия в проёме не закрывают его: порог, низ двери, ошибка высоты пола (по журналу со шлема дверь терялась из-за них)")]
+    public bool ignoreLowInDoorway = true;
     [Tooltip("Проёмы ближе этого расстояния друг к другу считаются одним, м")]
     public float mergeDistance = 0.7f;
     [Tooltip("Проём, не подтверждавшийся столько секунд, забывается")]
-    public float forgetAfter = 3f;
+    public float forgetAfter = 6f;
+    [Tooltip("Подтверждённый проём продолжает сообщаться в реестр, пока с последнего подтверждения прошло не больше, сек (карта шумит, проём виден не каждый скан)")]
+    public float holdSeconds = 3f;
 
     [Header("Модель комнаты (MR Utility Kit)")]
     public bool useSceneModel = true;
@@ -139,7 +143,7 @@ public class DoorFinder : MonoBehaviour
     {
         scanIndex++;
         NavZones.FindPassages(query, map.cellSize, head.position, head.forward, scanYaw, scanStepDeg, range,
-                              minWidth, maxWidth, minDepthBeyond, 0.25f, found);
+                              minWidth, maxWidth, minDepthBeyond, 0.25f, found, ignoreLowInDoorway);
 
         foreach (var p in found)
         {
@@ -175,7 +179,7 @@ public class DoorFinder : MonoBehaviour
                 tracks.RemoveAt(i);
                 continue;
             }
-            if (t.hits < confirmScans || now - t.lastSeen > interval * 1.5f) continue;
+            if (t.hits < confirmScans || now - t.lastSeen > holdSeconds) continue;
             if (NearSceneDoor(t.center)) continue;   // уже есть точная дверь из модели комнаты
             mapDoors++;
             Vector3 pos = t.center;

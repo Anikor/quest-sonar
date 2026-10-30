@@ -159,10 +159,17 @@ public static class NavZones
     /// </summary>
     public static int FindPassages(CellQuery cell, float cellSize, Vector3 origin, Vector3 forward, float scanYaw,
                                    float stepDeg, float maxRange, float minWidth, float maxWidth, float minDepthBeyond,
-                                   float start, List<Passage> result)
+                                   float start, List<Passage> result, bool tallOnly = false)
     {
         result.Clear();
         forward = Flat(forward);
+        if (tallOnly)
+        {
+            // Низкие клетки не мешают: в дверном проёме карта часто показывает «низкое» (порог, низ двери, ошибка пола),
+            // и проём между высокими косяками иначе считается закрытым. На шлеме (2026-10-30) именно так терялись двери.
+            CellQuery inner = cell;
+            cell = k => { Cell c = inner(k); return c == Cell.Low ? Cell.Free : c; };
+        }
         stepDeg = Mathf.Max(0.5f, stepDeg);
         int n = Mathf.Max(3, Mathf.RoundToInt(2f * scanYaw / stepDeg) + 1);
         float angleStep = 2f * scanYaw / (n - 1);
