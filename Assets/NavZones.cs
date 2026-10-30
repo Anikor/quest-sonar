@@ -231,7 +231,8 @@ public static class NavZones
                 toC.y = 0f;
                 // Косяки должны быть частью стены: высокие клетки продолжаются от косяка в сторону от проёма.
                 // Иначе дверью становится любой зазор между двумя высокими предметами (шкаф и монитор, два человека).
-                bool jambsOk = !requireWallJambs || (WallSupport(cell, cellSize, a, a - b) && WallSupport(cell, cellSize, b, b - a));
+                // хотя бы один косяк в стене (второй может быть краем открытой двери или шкафом рядом с проёмом)
+                bool jambsOk = !requireWallJambs || WallSupport(cell, cellSize, a, a - b) || WallSupport(cell, cellSize, b, b - a);
                 float depth = jambsOk && toC.magnitude >= minDistance
                     ? Corridor(cell, cellSize, center, toC, 0f, 3f, cellSize, out _)
                     : -1f;

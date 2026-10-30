@@ -61,6 +61,8 @@ public class SignReader : MonoBehaviour
     public string status = "запуск";
     public string ocrStatus = "";
     public string lastText = "";
+    [Tooltip("Самая крупная надпись в последнем скане (ещё не подтверждённая)")]
+    public string seenText = "";
     public int signsInLastScan;
     public float lastOcrMs;
     public int scans;
@@ -300,6 +302,9 @@ public class SignReader : MonoBehaviour
             reported.Append($"{{\"text\":{VisionLog.Str(tr.text)},\"seen\":{tr.seen},\"pixel\":{VisionLog.V(tr.pixel)},\"pos\":{VisionLog.V(pos)},\"dist\":{VisionLog.F(dist)},\"byDepth\":{VisionLog.B(byDepth)},\"id\":{id}}}");
         }
         status = signs.Count > 0 ? $"видно надписей: {signs.Count}, {lastOcrMs:F0} мс" : $"текста не видно, {lastOcrMs:F0} мс";
+        seenText = signs.Count > 0 ? signs[0].text : "";
+        // пока текст в кадре, сканируем чаще: на ходу вторая встреча с табличкой иначе не успевает
+        if (signs.Count > 0) nextScan = Mathf.Min(nextScan, now + Mathf.Max(0.5f, scanInterval * 0.5f));
 
         LogScan(reported.ToString());
 
@@ -387,7 +392,8 @@ public class SignReader : MonoBehaviour
     {
         var sb = new StringBuilder();
         sb.Append("Текст: ").AppendLine(status);
-        if (!string.IsNullOrEmpty(lastText)) sb.Append("«").Append(lastText).AppendLine("»");
+        if (!string.IsNullOrEmpty(seenText) && seenText != lastText) sb.Append("видно: ").AppendLine(seenText.Length > 60 ? seenText.Substring(0, 60) + "…" : seenText);
+        if (!string.IsNullOrEmpty(lastText)) sb.Append("«").Append(lastText.Length > 60 ? lastText.Substring(0, 60) + "…" : lastText).AppendLine("»");
         if (feed != null && !feed.IsReady) sb.AppendLine(feed.status);
         if (SpeechOutput.Instance != null) sb.Append("Голос: ").AppendLine(SpeechOutput.Instance.status);
         if (DoorFinder.Instance != null) sb.AppendLine(DoorFinder.Instance.status);

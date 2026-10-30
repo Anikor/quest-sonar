@@ -180,8 +180,15 @@ public static class VisionCheck
         var s3 = new List<SignCandidate> { new SignCandidate { text = "ТУАЛЕТ", rect = new RectInt(0, 0, 100, 40), confidence = 80f, words = 1 } };
         tracker.Observe(s3, 5f, confirmed, updated);
         Check(confirmed.Count == 0 && tracker.Tracks.Count == 2, $"другой текст: новый трек, не подтверждён (треков {tracker.Tracks.Count})");
-        tracker.Observe(new List<SignCandidate>(), 20f, confirmed, updated);
-        Check(tracker.Tracks.Count == 0, $"через 15 с без наблюдений треки забыты ({tracker.Tracks.Count})");
+        tracker.Observe(new List<SignCandidate>(), 40f, confirmed, updated);
+        Check(tracker.Tracks.Count == 0, $"через 35 с без наблюдений треки забыты ({tracker.Tracks.Count})");
+        // надёжная табличка подтверждается с первого скана, слабая - нет
+        var strong = new List<SignCandidate> { new SignCandidate { text = "DEPARTAMENT INFORMATICĂ", rect = new RectInt(0, 0, 300, 40), confidence = 92f, words = 2 } };
+        tracker.Observe(strong, 50f, confirmed, updated);
+        Check(confirmed.Count == 1, $"надёжный текст (92%, 22 буквы) подтверждён с первого скана ({confirmed.Count})");
+        var weak = new List<SignCandidate> { new SignCandidate { text = "2/09 2/09", rect = new RectInt(0, 0, 100, 40), confidence = 94f, words = 2 } };
+        tracker.Observe(weak, 51f, confirmed, updated);
+        Check(confirmed.Count == 0, $"короткий текст '2/09 2/09' с первого скана не подтверждён ({confirmed.Count})");
 
         // ---------------- 3б. OcrImage: контраст, вырез с увеличением, области
         var dim = new byte[1000];

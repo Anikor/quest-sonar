@@ -605,8 +605,23 @@ public sealed class TextTracker
 
     [Tooltip("Похожесть текстов (0..1), чтобы считать их одной табличкой")]
     public float similarity = 0.75f;
-    public float forgetAfter = 10f;
+    public float forgetAfter = 20f;
     public int needed = 2;
+    [Tooltip("Надёжная табличка подтверждается с первого скана: уверенность не ниже этой и букв/цифр не меньше strongAlnum (на ходу вторая встреча часто не случается)")]
+    public float strongConfidence = 85f;
+    public int strongAlnum = 8;
+
+    public bool IsStrong(SignCandidate s)
+    {
+        if (s == null || s.confidence < strongConfidence) return false;
+        int alnum = 0, longest = 0, run = 0;
+        foreach (char c in s.text)
+        {
+            if (char.IsLetterOrDigit(c)) { alnum++; run++; if (run > longest) longest = run; }
+            else run = 0;
+        }
+        return alnum >= strongAlnum && longest >= 4;
+    }
 
     readonly List<Track> tracks = new List<Track>();
     public IReadOnlyList<Track> Tracks => tracks;
@@ -638,6 +653,7 @@ public sealed class TextTracker
                 best.bestConf = s.confidence;
             }
             best.seen++;
+            if (IsStrong(s) && best.seen < needed) best.seen = needed;   // надёжный текст не ждёт второго скана
             best.lastSeen = now;
             best.pixel = s.Center;
             used.Add(best);
