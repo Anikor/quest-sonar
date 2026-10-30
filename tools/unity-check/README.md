@@ -14,6 +14,11 @@
 4. Запустить: `Unity.exe -batchmode -nographics -projectPath <dir> -executeMethod StableCheck.Run -quit -logFile <log>`.
 5. В логе искать `error CS` и строки `STABLECHECK:`; последняя должна быть `OK DONE`. Код выхода: 0 - всё хорошо, 3 - тест не прошёл.
 
+## VisionCheck (ветка vision)
+Дополнительно скопировать `Assets/Vision/*.cs` (в `<dir>/Assets/Vision/`) и `Assets/NavZones.cs`, `VisionCheck.cs` - в `<dir>/Assets/Editor/`,
+запустить `-executeMethod VisionCheck.Run`. Тесты: двери по карте (`NavZones`), отсев и сборка текста (`SignText`),
+подтверждение текста (`TextTracker`), переворот кадра (`PassthroughCameraFeed.ToGray`). Последняя строка `VISIONCHECK: OK DONE`.
+
 Что не проверяется без шлема: Android TTS (`ExperimentController`), Depth API, OVRInput, шейдер глубины (compute-шейдер
 компилируется при первом Dispatch, `ShaderUtil.GetComputeShaderMessages` в batch-режиме ничего не возвращает).
 

@@ -362,6 +362,15 @@ public class ObstacleMap : MonoBehaviour
 
     public bool IsOccupied(Vector3 world) { return IsOccupiedCell(ToCell(world)); }
 
+    /// <summary>Что карта знает о клетке: для поиска проёмов (NavZones, DoorFinder). Tall = занят верхний слой (выше 1.2 м).</summary>
+    public NavZones.Cell QueryCell(Vector2Int key)
+    {
+        if (!cells.TryGetValue(key, out var c)) return NavZones.Cell.Unknown;
+        if (c.l[Layers - 1] >= occThreshold) return NavZones.Cell.Tall;
+        for (int i = 0; i < Layers - 1; i++) if (c.l[i] >= occThreshold) return NavZones.Cell.Low;
+        return IsCellSeen(c) ? NavZones.Cell.Free : NavZones.Cell.Unknown;
+    }
+
     /// <summary>Расстояние по горизонтали до ближайшего препятствия вдоль направления (-1, если нет).</summary>
     public float DistanceAlong(Vector3 dir, float max)
     {
