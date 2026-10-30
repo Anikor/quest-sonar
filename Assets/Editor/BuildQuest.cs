@@ -66,7 +66,7 @@ public static class BuildQuest
         PlayerSettings.SetIl2CppCompilerConfiguration(BuildTargetGroup.Android, Il2CppCompilerConfiguration.Release);
         PlayerSettings.Android.targetArchitectures = AndroidArchitecture.ARM64;
         PlayerSettings.Android.minSdkVersion = (AndroidSdkVersions)32;      // Horizon OS требует 32+
-        PlayerSettings.Android.targetSdkVersion = (AndroidSdkVersions)32;
+        PlayerSettings.Android.targetSdkVersion = (AndroidSdkVersions)34;   // платформа 34 есть в SDK Unity Hub; 32 пришлось бы качать (нужны принятые лицензии)
         PlayerSettings.Android.optimizedFramePacing = false;
         PlayerSettings.Android.forceInternetPermission = false;
 
