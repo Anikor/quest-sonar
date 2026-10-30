@@ -50,6 +50,8 @@ public class SignReader : MonoBehaviour
     [Header("Управление, журнал и отладка")]
     [Tooltip("Правый хват: прочитать вслух всё, что видно сейчас")]
     public bool readOnGrip = true;
+    [Tooltip("Подтверждённую табличку сразу читать вслух (не дожидаясь, пока звук озвучит ориентир ближе 3 м)")]
+    public bool speakConfirmed = true;
     [Tooltip("Сохранять каждый распознанный кадр в vision-log/frames (для разбора качества OCR)")]
     public bool saveFrames = true;
     public bool showLabel = true;
@@ -287,6 +289,13 @@ public class SignReader : MonoBehaviour
             int id = SonarLandmarks.MakeId(LandmarkKind.Text, pos, 0.7f);
             SonarLandmarks.Report(id, LandmarkKind.Text, pos, tr.text);
             lastText = tr.text;
+            // Подтверждённую табличку читаем вслух сами, один раз на трек: звук (AudioSonar) озвучивает ориентир только
+            // ближе 3 м и в секторе ±50°, а табличка часто читается с 2-4 м. Повторы гасит SpeechOutput.repeatCooldown.
+            if (speakConfirmed && !speakAfterScan && !tr.announced)
+            {
+                tr.announced = true;
+                SpeechOutput.Speak(tr.text, false);
+            }
             if (reported.Length > 0) reported.Append(',');
             reported.Append($"{{\"text\":{VisionLog.Str(tr.text)},\"seen\":{tr.seen},\"pixel\":{VisionLog.V(tr.pixel)},\"pos\":{VisionLog.V(pos)},\"dist\":{VisionLog.F(dist)},\"byDepth\":{VisionLog.B(byDepth)},\"id\":{id}}}");
         }

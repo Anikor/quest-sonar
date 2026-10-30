@@ -27,7 +27,7 @@ public class SpeechOutput : MonoBehaviour
     [Tooltip("Движки TTS по порядку: пакет или пусто = движок по умолчанию. eSpeak NG = com.reecedunn.espeak (F-Droid), системный Quest = com.oculus.systemintelligence")]
     public string[] engines = { "com.reecedunn.espeak", "", "com.oculus.systemintelligence" };
     [Tooltip("Одна и та же фраза не повторяется чаще, сек (чтобы табличка не читалась снова и снова)")]
-    public float repeatCooldown = 4f;
+    public float repeatCooldown = 15f;
     [Range(0.5f, 2f)] public float speechRate = 1.1f;
     [Tooltip("Сколько секунд ждать ответа движка при запуске, прежде чем пробовать следующий")]
     public float engineTimeout = 15f;

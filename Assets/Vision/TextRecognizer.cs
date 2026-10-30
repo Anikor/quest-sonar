@@ -201,7 +201,7 @@ public sealed class TesseractRecognizer : ITextRecognizer
     public bool useWhitelist = true;
     public int targetTextHeight = 32;
     public int maxScale = 4;
-    public int maxRegions = 6;
+    public int maxRegions = 4;   // по журналу: 6 областей × увеличение до ×4 давали до 4.6 с на кадр
     /// <summary>Слова первого прохода с уверенностью ниже этой не образуют областей для второго (0 = любые слова с буквами).</summary>
     public float regionMinConf = 0f;
 
