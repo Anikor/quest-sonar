@@ -329,7 +329,7 @@ public class SignReader : MonoBehaviour
         {
             var w = words[i];
             if (i > 0) sb.Append(',');
-            sb.Append($"{{\"t\":{VisionLog.Str(w.text)},\"c\":{VisionLog.F(w.confidence)},\"r\":{VisionLog.R(w.rect)},\"l\":{w.line},\"p\":{w.pass}}}");
+            sb.Append($"{{\"t\":{VisionLog.Str(w.text)},\"c\":{VisionLog.F(w.confidence)},\"r\":{VisionLog.R(w.rect)},\"l\":{w.line},\"p\":{w.pass},\"i\":{VisionLog.B(w.inverted)}}}");
         }
         sb.Append("],\"signs\":[");
         for (int i = 0; i < signs.Count; i++)

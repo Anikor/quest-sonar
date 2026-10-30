@@ -11,6 +11,8 @@ public struct OcrWord
     public RectInt rect;
     public int line;
     public int pass;
+    /// <summary>Найдено на инвертированном кадре: светлый текст на тёмном фоне (номера кабинетов на тёмной полосе и т.п.).</summary>
+    public bool inverted;
 }
 
 /// <summary>Движок распознавания текста. Init и Recognize вызываются из рабочего потока (не главного).</summary>
@@ -199,6 +201,8 @@ public sealed class TesseractRecognizer : ITextRecognizer
     public bool twoPass = true;
     public bool normalizeContrast = true;
     public bool useWhitelist = true;
+    /// <summary>Искать и светлый текст на тёмном фоне: первый проход повторяется на инвертированном кадре (+0.5-1 с).</summary>
+    public bool invertedPass = true;
     public int targetTextHeight = 32;
     public int maxScale = 4;
     public int maxRegions = 4;   // по журналу: 6 областей × увеличение до ×4 давали до 4.6 с на кадр
@@ -210,7 +214,7 @@ public sealed class TesseractRecognizer : ITextRecognizer
     public float lastPass1Ms, lastPass2Ms;
 
     AndroidJavaObject api;
-    byte[] work;
+    byte[] work, workInv;
     sbyte[] signed;
     public bool Ready { get; private set; }
     public string Status { get; private set; } = "не запущен";
@@ -235,6 +239,7 @@ public sealed class TesseractRecognizer : ITextRecognizer
             }
             api.Call("setPageSegMode", PsmSparseText);
             api.Call<bool>("setVariable", "preserve_interword_spaces", "1");
+            api.Call<bool>("setVariable", "tessedit_do_invert", "1");   // пробовать инверсию строки при низкой уверенности
             if (useWhitelist) api.Call<bool>("setVariable", "tessedit_char_whitelist", Whitelist);
             try { Version = api.Call<string>("getVersion"); } catch { Version = "?"; }
             Ready = true;
@@ -267,7 +272,17 @@ public sealed class TesseractRecognizer : ITextRecognizer
 
         var sw = System.Diagnostics.Stopwatch.StartNew();
         var pass1 = new List<OcrWord>();
-        RunPass(img, width, height, PsmSparseText, pass1, 0, 0, 1, 0, 1);
+        RunPass(img, width, height, PsmSparseText, pass1, 0, 0, 1, 0, 1, false);
+
+        // светлый текст на тёмном фоне (номер кабинета на тёмной полосе): тот же проход по инвертированному кадру
+        byte[] inv = null;
+        if (invertedPass)
+        {
+            if (workInv == null || workInv.Length != n) workInv = new byte[n];
+            inv = workInv;
+            for (int i = 0; i < n; i++) inv[i] = (byte)(255 - img[i]);
+            RunPass(inv, width, height, PsmSparseText, pass1, 0, 0, 1, 1000, 1, true);
+        }
         lastPass1Ms = (float)sw.Elapsed.TotalMilliseconds;
         lastPass1Words = pass1.Count;
 
@@ -280,7 +295,7 @@ public sealed class TesseractRecognizer : ITextRecognizer
         sw.Restart();
         var regions = OcrImage.FindRegions(pass1, width, height, regionMinConf, maxRegions);
         lastRegions = regions.Count;
-        int lineBase = 0;
+        int lineBase = 2000;
         var pass2 = new List<OcrWord>();
         foreach (var reg in regions)
         {
@@ -292,9 +307,14 @@ public sealed class TesseractRecognizer : ITextRecognizer
             long pixels = (long)crop.width * scale * crop.height * scale;
             if (pixels > 4_000_000L) scale = Mathf.Max(1, (int)Math.Sqrt(4_000_000.0 / ((long)crop.width * crop.height)));
 
+            // область читаем в той полярности, в которой её нашёл первый проход (большинство слов)
+            int invCount = 0;
+            foreach (var o in reg.words) if (o.inverted) invCount++;
+            bool useInv = inv != null && invCount * 2 > reg.words.Count;
+
             pass2.Clear();
-            byte[] sub = OcrImage.CropScale(img, width, height, crop, scale);
-            RunPass(sub, crop.width * scale, crop.height * scale, PsmSingleBlock, pass2, crop.x, crop.y, scale, lineBase, 2);
+            byte[] sub = OcrImage.CropScale(useInv ? inv : img, width, height, crop, scale);
+            RunPass(sub, crop.width * scale, crop.height * scale, PsmSingleBlock, pass2, crop.x, crop.y, scale, lineBase, 2, useInv);
 
             if (OcrImage.Score(pass2) >= OcrImage.Score(reg.words))
             {
@@ -316,7 +336,7 @@ public sealed class TesseractRecognizer : ITextRecognizer
     }
 
     /// <summary>Один вызов Tesseract: картинка img (w×h, серый, сверху вниз). Рамки слов переводятся в координаты исходного кадра.</summary>
-    void RunPass(byte[] img, int w, int h, int psm, List<OcrWord> outWords, int offX, int offY, int scale, int lineBase, int pass)
+    void RunPass(byte[] img, int w, int h, int psm, List<OcrWord> outWords, int offX, int offY, int scale, int lineBase, int pass, bool inverted)
     {
         int n = w * h;
         if (signed == null || signed.Length < n) signed = new sbyte[n];
@@ -351,6 +371,7 @@ public sealed class TesseractRecognizer : ITextRecognizer
                     confidence = conf,
                     line = lineBase + Math.Max(0, line),
                     pass = pass,
+                    inverted = inverted,
                     rect = new RectInt(x0, y0, Math.Max(1, x1 - x0), Math.Max(1, y1 - y0))
                 });
             } while (it.Call<bool>("next", RilWord));
