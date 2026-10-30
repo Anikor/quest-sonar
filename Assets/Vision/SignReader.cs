@@ -42,6 +42,10 @@ public class SignReader : MonoBehaviour
     public float maxHeadSpeedDeg = 30f;
 
     [Header("Положение таблички")]
+    [Tooltip("Табличка читается вслух и попадает в реестр, только если по глубине она ближе этого расстояния, м (плакаты через всю комнату не нужны)")]
+    public float maxReadDistance = 2f;
+    [Tooltip("Без ответа глубины расстояние неизвестно: такие надписи сами не читаются (только по правому хвату)")]
+    public bool requireDepth = true;
     [Tooltip("Дальше этого расстояния точка по глубине не ищется, м")]
     public float maxRange = 4f;
     [Tooltip("Если глубина не ответила, табличка ставится на этом расстоянии вдоль луча, м")]
@@ -285,21 +289,37 @@ public class SignReader : MonoBehaviour
 
         var toReport = speakAfterScan ? updated : confirmed;
         var reported = new StringBuilder();
+        TextTracker.Track toSpeak = null;
+        float toSpeakArea = -1f;
         foreach (var tr in toReport)
         {
             Vector3 pos = LocatePixel(tr.pixel, out bool byDepth, out float dist);
+            // далёкие плакаты не нужны: только то, что по глубине ближе maxReadDistance (по хвату читаем всё)
+            bool near = byDepth ? dist <= maxReadDistance : !requireDepth;
+            if (!speakAfterScan && !near)
+            {
+                if (reported.Length > 0) reported.Append(',');
+                reported.Append($"{{\"text\":{VisionLog.Str(tr.text)},\"skipped\":\"far\",\"dist\":{VisionLog.F(dist)},\"byDepth\":{VisionLog.B(byDepth)}}}");
+                continue;
+            }
             int id = SonarLandmarks.MakeId(LandmarkKind.Text, pos, 0.7f);
             SonarLandmarks.Report(id, LandmarkKind.Text, pos, tr.text);
             lastText = tr.text;
-            // Подтверждённую табличку читаем вслух сами, один раз на трек: звук (AudioSonar) озвучивает ориентир только
-            // ближе 3 м и в секторе ±50°, а табличка часто читается с 2-4 м. Повторы гасит SpeechOutput.repeatCooldown.
+            // Подтверждённую табличку читаем вслух сами, один раз на трек, и только одну (самую крупную) за скан:
+            // звук (AudioSonar) озвучивает ориентир только ближе 3 м и в секторе ±50°. Повторы гасит SpeechOutput.repeatCooldown.
             if (speakConfirmed && !speakAfterScan && !tr.announced)
             {
-                tr.announced = true;
-                SpeechOutput.Speak(tr.text, false);
+                float area = 0f;
+                foreach (var s in signs) if (s.text == tr.text) { area = s.Area; break; }
+                if (area > toSpeakArea) { toSpeakArea = area; toSpeak = tr; }
             }
             if (reported.Length > 0) reported.Append(',');
             reported.Append($"{{\"text\":{VisionLog.Str(tr.text)},\"seen\":{tr.seen},\"pixel\":{VisionLog.V(tr.pixel)},\"pos\":{VisionLog.V(pos)},\"dist\":{VisionLog.F(dist)},\"byDepth\":{VisionLog.B(byDepth)},\"id\":{id}}}");
+        }
+        if (toSpeak != null)
+        {
+            toSpeak.announced = true;
+            SpeechOutput.Speak(toSpeak.text, false);
         }
         status = signs.Count > 0 ? $"видно надписей: {signs.Count}, {lastOcrMs:F0} мс" : $"текста не видно, {lastOcrMs:F0} мс";
         seenText = signs.Count > 0 ? signs[0].text : "";

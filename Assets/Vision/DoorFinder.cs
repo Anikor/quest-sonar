@@ -63,11 +63,11 @@ public class DoorFinder : MonoBehaviour
     public float cueRange = 4f;
     [Tooltip("Дверь озвучивается, если она в этом секторе от взгляда, градусы в каждую сторону")]
     public float cueYaw = 70f;
-    public float cueRepeat = 2.5f;
+    public float cueRepeat = 2f;
     public float voiceRepeat = 10f;
-    [Range(0f, 1f)] public float cueVolume = 0.8f;
+    [Range(0f, 1f)] public float cueVolume = 1f;
     [Tooltip("Источник ставится не дальше этого расстояния от головы, чтобы громкость задавалась нами")]
-    public float maxSourceDistance = 2.5f;
+    public float maxSourceDistance = 1.5f;
 
     [Header("Журнал")]
     [Tooltip("Как часто писать ASCII-карту вокруг пользователя в vision-log, сек (0 = не писать)")]
@@ -249,14 +249,15 @@ public class DoorFinder : MonoBehaviour
         return a;
     }
 
-    /// <summary>Два коротких деревянных стука («тук-тук»): глухой тон ~170 Гц с быстрым затуханием и щелчком, пауза 0.12 с.</summary>
+    /// <summary>Три деревянных стука («тук-тук-тук»): глухой тон ~170 Гц с быстрым затуханием и щелчком, пауза 0.14 с. Заметно громче и длиннее писков сонара.</summary>
     static AudioClip MakeKnockKnock(string name)
     {
-        const float knockLen = 0.09f, gap = 0.12f;
+        const float knockLen = 0.13f, gap = 0.14f;
+        const int knocks = 3;
         int kn = (int)(SampleRate * knockLen), gn = (int)(SampleRate * gap);
-        var data = new float[kn * 2 + gn];
+        var data = new float[kn * knocks + gn * (knocks - 1)];
         var rnd = new System.Random(777);
-        for (int k = 0; k < 2; k++)
+        for (int k = 0; k < knocks; k++)
         {
             int off = k * (kn + gn);
             float phase = 0f;
