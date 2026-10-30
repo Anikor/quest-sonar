@@ -52,8 +52,8 @@ public class SignReader : MonoBehaviour
     public bool readOnGrip = true;
     [Tooltip("Подтверждённую табличку сразу читать вслух (не дожидаясь, пока звук озвучит ориентир ближе 3 м)")]
     public bool speakConfirmed = true;
-    [Tooltip("Сохранять каждый распознанный кадр в vision-log/frames (для разбора качества OCR)")]
-    public bool saveFrames = true;
+    [Tooltip("Сохранять каждый распознанный кадр в vision-log/frames (для разбора качества OCR). Кодирование JPG идёт в главном потоке и даёт рывок каждые scanInterval, поэтому по умолчанию выключено")]
+    public bool saveFrames = false;
     public bool showLabel = true;
     public Vector3 labelOffset = new Vector3(0.36f, 0.02f, 1.0f);
 

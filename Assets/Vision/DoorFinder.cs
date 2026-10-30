@@ -51,7 +51,7 @@ public class DoorFinder : MonoBehaviour
 
     [Header("Журнал")]
     [Tooltip("Как часто писать ASCII-карту вокруг пользователя в vision-log, сек (0 = не писать)")]
-    public float mapDumpInterval = 5f;
+    public float mapDumpInterval = 10f;
     [Tooltip("Размер карты в журнале, м (в каждую сторону от пользователя)")]
     public float mapDumpRadius = 4f;
 
