@@ -9,13 +9,15 @@ using UnityEngine;
 using UnityEngine.Networking;
 
 /// <summary>
-/// Чтение табличек: кадр с камеры passthrough → OCR (Tesseract, rus+eng) в фоновом потоке → отсев мусора и сборка строк
-/// в таблички (SignText) → подтверждение по нескольким сканам (TextTracker) → мировая точка по глубине
+/// Чтение табличек: кадр с камеры passthrough → OCR (Tesseract, rus+eng, два прохода) в фоновом потоке → отсев мусора и
+/// сборка строк в таблички (SignText) → подтверждение по нескольким сканам (TextTracker) → мировая точка по глубине
 /// (луч через пиксель, EnvironmentRaycastManager) → SonarLandmarks.Report(Text). Дальше AudioSonar озвучивает мелодию
 /// текста и произносит его через SonarLandmarks.SpeakHandler (= SpeechOutput).
 ///
+/// Кадр снимается только когда голова почти неподвижна (размазанный кадр OCR не читает).
 /// Правый хват: прочитать вслух прямо сейчас всё, что видно (без ожидания подтверждения).
-/// Скрипт создаётся сам при старте сцены. На шлеме ещё не проверялся.
+/// Всё, что видел и решил распознаватель, пишется в VisionLog (кадры и слова) для разбора после прогона.
+/// Скрипт создаётся сам при старте сцены.
 /// </summary>
 public class SignReader : MonoBehaviour
 {
@@ -33,6 +35,11 @@ public class SignReader : MonoBehaviour
     public int confirmScans = 2;
     [Tooltip("Похожесть текста между сканами (0..1), чтобы считать его той же табличкой")]
     [Range(0.5f, 1f)] public float textSimilarity = 0.75f;
+    [Tooltip("Второй проход: области текста вырезаются и увеличиваются до высоты строки ~targetTextHeight px")]
+    public bool twoPassOcr = true;
+    public int targetTextHeight = 32;
+    [Tooltip("Кадр снимается, только если голова поворачивается медленнее, град/с (иначе смаз)")]
+    public float maxHeadSpeedDeg = 30f;
 
     [Header("Положение таблички")]
     [Tooltip("Дальше этого расстояния точка по глубине не ищется, м")]
@@ -40,9 +47,11 @@ public class SignReader : MonoBehaviour
     [Tooltip("Если глубина не ответила, табличка ставится на этом расстоянии вдоль луча, м")]
     public float fallbackDistance = 2f;
 
-    [Header("Управление и отладка")]
+    [Header("Управление, журнал и отладка")]
     [Tooltip("Правый хват: прочитать вслух всё, что видно сейчас")]
     public bool readOnGrip = true;
+    [Tooltip("Сохранять каждый распознанный кадр в vision-log/frames (для разбора качества OCR)")]
+    public bool saveFrames = true;
     public bool showLabel = true;
     public Vector3 labelOffset = new Vector3(0.36f, 0.02f, 1.0f);
 
@@ -53,6 +62,7 @@ public class SignReader : MonoBehaviour
     public int signsInLastScan;
     public float lastOcrMs;
     public int scans;
+    public float headSpeedDeg;
 
     PassthroughCameraFeed feed;
     EnvironmentRaycastManager raycaster;
@@ -67,16 +77,22 @@ public class SignReader : MonoBehaviour
     volatile bool stopWorker;
     volatile int state;            // 0 свободен, 1 кадр готов, 2 распознаёт, 3 результат готов
     volatile bool ocrReady;
+    ITextRecognizer ocr;
     readonly PassthroughCameraFeed.Frame frame = new PassthroughCameraFeed.Frame();
     readonly List<OcrWord> words = new List<OcrWord>();
     float workerMs;
+    string frameFile;
+    Vector3 frameHeadPos;
+    Quaternion frameHeadRot;
 
     readonly TextTracker tracker = new TextTracker();
     readonly List<TextTracker.Track> confirmed = new List<TextTracker.Track>();
     readonly List<TextTracker.Track> updated = new List<TextTracker.Track>();
     List<SignCandidate> signs = new List<SignCandidate>();
-    float nextScan, labelTimer;
+    float nextScan, labelTimer, forceSince;
     bool forceScan, speakAfterScan;
+    Quaternion prevHeadRot;
+    bool prevRotValid;
 
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
     static void Boot()
@@ -85,7 +101,11 @@ public class SignReader : MonoBehaviour
             new GameObject("SignReader").AddComponent<SignReader>();
     }
 
-    void Awake() { Instance = this; }
+    void Awake()
+    {
+        Instance = this;
+        VisionLog.Init();
+    }
 
     IEnumerator Start()
     {
@@ -103,6 +123,7 @@ public class SignReader : MonoBehaviour
         worker = new Thread(WorkerMain) { Name = "SignReader OCR", IsBackground = true };
         worker.Start();
         status = "OCR запускается";
+        VisionLog.Event("signreader", $"\"languages\":{VisionLog.Str(languages)},\"minConfidence\":{VisionLog.F(minConfidence)},\"confirmScans\":{confirmScans},\"twoPass\":{VisionLog.B(twoPassOcr)},\"targetTextHeight\":{targetTextHeight},\"flipVertical\":{VisionLog.B(feed.flipVertical)}");
     }
 
     /// <summary>Копирует *.traineddata из StreamingAssets (внутри APK) в persistentDataPath/tesseract/tessdata, где их может открыть Tesseract.</summary>
@@ -153,13 +174,18 @@ public class SignReader : MonoBehaviour
     void WorkerMain()
     {
         if (isAndroid) AndroidJNI.AttachCurrentThread();
-        ITextRecognizer ocr = null;
         try
         {
-            ocr = isAndroid ? (ITextRecognizer)new TesseractRecognizer() : new NullRecognizer();
+            if (isAndroid)
+            {
+                var t = new TesseractRecognizer { twoPass = twoPassOcr, targetTextHeight = targetTextHeight };
+                ocr = t;
+            }
+            else ocr = new NullRecognizer();
             ocrReady = ocr.Init(dataDir, languages);
             ocrStatus = ocr.Status;
             Debug.Log("SignReader: " + ocrStatus);
+            VisionLog.Event("ocr_init", $"\"ok\":{VisionLog.B(ocrReady)},\"status\":{VisionLog.Str(ocrStatus)}");
 
             var sw = new System.Diagnostics.Stopwatch();
             while (!stopWorker)
@@ -188,6 +214,15 @@ public class SignReader : MonoBehaviour
         if (head == null || worker == null) return;
         float now = Time.time;
 
+        // скорость поворота головы (для отсева смазанных кадров)
+        if (prevRotValid)
+        {
+            float a = Quaternion.Angle(prevHeadRot, head.rotation) / Mathf.Max(1e-4f, Time.deltaTime);
+            headSpeedDeg = Mathf.Lerp(headSpeedDeg, a, 0.5f);
+        }
+        prevHeadRot = head.rotation;
+        prevRotValid = true;
+
         if (state == 3)
         {
             state = 0;
@@ -198,19 +233,29 @@ public class SignReader : MonoBehaviour
 
         if (readOnGrip && OVRInput.GetDown(OVRInput.Button.SecondaryHandTrigger))
         {
+            VisionLog.Event("grip", $"\"cameraReady\":{VisionLog.B(feed.IsReady)},\"ocrReady\":{VisionLog.B(ocrReady)}");
             forceScan = true;
             speakAfterScan = true;
+            forceSince = now;
             if (!feed.IsReady) { SpeechOutput.Speak("камера не готова", true); forceScan = false; speakAfterScan = false; }
             else if (!ocrReady) { SpeechOutput.Speak("распознавание не готово", true); forceScan = false; speakAfterScan = false; }
         }
 
         bool due = readSigns && now >= nextScan;
-        if ((due || forceScan) && state == 0 && ocrReady && feed != null && feed.IsReady)
+        bool still = headSpeedDeg <= maxHeadSpeedDeg || (forceScan && now - forceSince > 1f);
+        if ((due || forceScan) && still && state == 0 && ocrReady && feed != null && feed.IsReady)
         {
             if (feed.TryCapture(frame))
             {
                 forceScan = false;
                 nextScan = now + scanInterval;
+                frameHeadPos = head.position;
+                frameHeadRot = head.rotation;
+                frameFile = saveFrames ? VisionLog.SaveFrame(frame.gray, frame.width, frame.height, $"scan-{scans + 1:0000}") : null;
+                VisionLog.Event("capture", $"\"scan\":{scans + 1},\"file\":{VisionLog.Str(frameFile)},\"w\":{frame.width},\"h\":{frame.height}," +
+                                           $"\"headPos\":{VisionLog.V(frameHeadPos)},\"headRot\":{VisionLog.Q(frameHeadRot)}," +
+                                           $"\"camPos\":{VisionLog.V(frame.cameraPose.position)},\"camRot\":{VisionLog.Q(frame.cameraPose.rotation)}," +
+                                           $"\"headSpeed\":{VisionLog.F(headSpeedDeg)},\"forced\":{VisionLog.B(speakAfterScan)}");
                 state = 1;
                 wake.Set();
                 status = "распознаю";
@@ -218,6 +263,7 @@ public class SignReader : MonoBehaviour
         }
         else if (!ocrReady && worker.IsAlive) status = ocrStatus.Length > 0 ? ocrStatus : "OCR запускается";
         else if (feed != null && !feed.IsReady) status = feed.status;
+        else if (due && !still && state == 0) status = "жду, пока голова остановится";
 
         labelTimer += Time.unscaledDeltaTime;
         if (label != null && labelTimer > 0.25f)
@@ -234,14 +280,19 @@ public class SignReader : MonoBehaviour
         tracker.Observe(signs, now, confirmed, updated);
 
         var toReport = speakAfterScan ? updated : confirmed;
+        var reported = new StringBuilder();
         foreach (var tr in toReport)
         {
-            Vector3 pos = LocatePixel(tr.pixel);
+            Vector3 pos = LocatePixel(tr.pixel, out bool byDepth, out float dist);
             int id = SonarLandmarks.MakeId(LandmarkKind.Text, pos, 0.7f);
             SonarLandmarks.Report(id, LandmarkKind.Text, pos, tr.text);
             lastText = tr.text;
+            if (reported.Length > 0) reported.Append(',');
+            reported.Append($"{{\"text\":{VisionLog.Str(tr.text)},\"seen\":{tr.seen},\"pixel\":{VisionLog.V(tr.pixel)},\"pos\":{VisionLog.V(pos)},\"dist\":{VisionLog.F(dist)},\"byDepth\":{VisionLog.B(byDepth)},\"id\":{id}}}");
         }
         status = signs.Count > 0 ? $"видно надписей: {signs.Count}, {lastOcrMs:F0} мс" : $"текста не видно, {lastOcrMs:F0} мс";
+
+        LogScan(reported.ToString());
 
         if (speakAfterScan)
         {
@@ -257,19 +308,57 @@ public class SignReader : MonoBehaviour
         }
     }
 
+    /// <summary>Полная запись скана в журнал: все слова OCR до отсева, таблички, подтверждения, что сообщено в реестр.</summary>
+    void LogScan(string reportedJson)
+    {
+        var sb = new StringBuilder(2048);
+        sb.Append($"\"scan\":{scans},\"file\":{VisionLog.Str(frameFile)},\"ms\":{VisionLog.F(lastOcrMs)}");
+        if (ocr is TesseractRecognizer t)
+            sb.Append($",\"pass1Words\":{t.lastPass1Words},\"regions\":{t.lastRegions},\"pass2Words\":{t.lastPass2Words},\"pass1Ms\":{VisionLog.F(t.lastPass1Ms)},\"pass2Ms\":{VisionLog.F(t.lastPass2Ms)}");
+        sb.Append(",\"words\":[");
+        for (int i = 0; i < words.Count; i++)
+        {
+            var w = words[i];
+            if (i > 0) sb.Append(',');
+            sb.Append($"{{\"t\":{VisionLog.Str(w.text)},\"c\":{VisionLog.F(w.confidence)},\"r\":{VisionLog.R(w.rect)},\"l\":{w.line},\"p\":{w.pass}}}");
+        }
+        sb.Append("],\"signs\":[");
+        for (int i = 0; i < signs.Count; i++)
+        {
+            var s = signs[i];
+            if (i > 0) sb.Append(',');
+            sb.Append($"{{\"t\":{VisionLog.Str(s.text)},\"c\":{VisionLog.F(s.confidence)},\"r\":{VisionLog.R(s.rect)},\"n\":{s.words}}}");
+        }
+        sb.Append("],\"tracks\":[");
+        for (int i = 0; i < tracker.Tracks.Count; i++)
+        {
+            var tr = tracker.Tracks[i];
+            if (i > 0) sb.Append(',');
+            sb.Append($"{{\"t\":{VisionLog.Str(tr.text)},\"seen\":{tr.seen},\"conf\":{VisionLog.F(tr.bestConf)}}}");
+        }
+        sb.Append("],\"reported\":[").Append(reportedJson).Append(']');
+        VisionLog.Event("ocr", sb.ToString());
+    }
+
     /// <summary>Мировая точка таблички: луч через пиксель кадра (по позе камеры на момент кадра) и глубина; иначе fallbackDistance по лучу.</summary>
-    Vector3 LocatePixel(Vector2 px)
+    Vector3 LocatePixel(Vector2 px, out bool byDepth, out float dist)
     {
         Ray ray = feed.PixelToRay(frame, px.x, px.y);
+        byDepth = false;
         if (raycaster != null)
         {
             try
             {
                 if (raycaster.Raycast(ray, out EnvironmentRaycastHit hit, maxRange) && hit.status == EnvironmentRaycastHitStatus.Hit)
+                {
+                    byDepth = true;
+                    dist = Vector3.Distance(ray.origin, hit.point);
                     return hit.point;
+                }
             }
             catch (Exception e) { Debug.LogWarning("SignReader: глубина: " + e.Message); }
         }
+        dist = fallbackDistance;
         return ray.origin + ray.direction.normalized * fallbackDistance;
     }
 
@@ -293,6 +382,7 @@ public class SignReader : MonoBehaviour
         if (feed != null && !feed.IsReady) sb.AppendLine(feed.status);
         if (SpeechOutput.Instance != null) sb.Append("Голос: ").AppendLine(SpeechOutput.Instance.status);
         if (DoorFinder.Instance != null) sb.AppendLine(DoorFinder.Instance.status);
+        sb.Append("Журнал: сканов ").Append(scans).Append(", кадров ").Append(VisionLog.SavedFrames);
         label.text = sb.ToString();
     }
 

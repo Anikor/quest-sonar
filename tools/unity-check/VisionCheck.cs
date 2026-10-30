@@ -160,6 +160,37 @@ public static class VisionCheck
         tracker.Observe(new List<SignCandidate>(), 20f, confirmed, updated);
         Check(tracker.Tracks.Count == 0, $"через 15 с без наблюдений треки забыты ({tracker.Tracks.Count})");
 
+        // ---------------- 3б. OcrImage: контраст, вырез с увеличением, области
+        var dim = new byte[1000];
+        for (int i = 0; i < dim.Length; i++) dim[i] = (byte)(100 + (i % 50));   // тусклый кадр 100..149
+        var norm = new byte[1000];
+        OcrImage.NormalizeContrast(dim, norm, dim.Length);
+        int lo = 255, hi = 0;
+        foreach (var b in norm) { if (b < lo) lo = b; if (b > hi) hi = b; }
+        Check(lo <= 5 && hi >= 250, $"контраст растянут: {lo}..{hi} (ожидается ~0..255)");
+
+        var img = new byte[8 * 8];
+        for (int y = 0; y < 8; y++) for (int x = 0; x < 8; x++) img[y * 8 + x] = (byte)(x < 4 ? 0 : 200);   // левая половина чёрная
+        var crop = OcrImage.CropScale(img, 8, 8, new RectInt(2, 2, 4, 4), 3);
+        Check(crop.Length == 144 && crop[0] == 0 && crop[11] == 200 && crop[5] > 40 && crop[5] < 160,
+              $"вырез 4x4 ×3 = 12x12: {crop.Length} байт, левый {crop[0]}, правый {crop[11]}, переход {crop[5]}");
+
+        var raw = new List<OcrWord>
+        {
+            W("Каб", 40f, 100, 100, 60, 20, 0), W("12", 35f, 170, 101, 30, 19, 0),   // неуверенные, но рядом -> одна область
+            W("ВЫХОД", 80f, 600, 500, 150, 40, 1),                                     // отдельная область
+            W("~", 90f, 300, 300, 10, 10, 2)                                           // без букв - не область
+        };
+        var regs = OcrImage.FindRegions(raw, 1280, 960, 10f, 6);
+        Check(regs.Count == 2 && regs[0].words.Count == 1 && regs[1].words.Count == 2,
+              $"областей {regs.Count} (ожидается 2: ВЫХОД крупнее, затем Каб+12)");
+        if (regs.Count == 2)
+            Check(regs[1].rect.xMin == 100 && regs[1].rect.xMax == 200 && regs[1].medianHeight >= 19f && regs[1].medianHeight <= 20f,
+                  $"область Каб 12: {regs[1].rect}, медианная высота {regs[1].medianHeight}");
+        var ex = OcrImage.Expand(new RectInt(5, 5, 10, 10), 8, 100, 100);
+        Check(ex.xMin == 0 && ex.yMin == 0 && ex.xMax == 23 && ex.yMax == 23, $"Expand обрезает по кадру: {ex}");
+        Check(OcrImage.Score(new List<OcrWord> { W("АБВ", 90f, 0, 0, 1, 1, 0), W("Г", 30f, 0, 0, 1, 1, 0) }) == 75f, "Score взвешен по длине (90*3+30*1)/4 = 75");
+
         // ---------------- 4. ToGray с переворотом
         var src = new NativeArray<Color32>(4, Allocator.Temp);
         src[0] = new Color32(255, 0, 0, 255);     // низ слева  -> серый 76

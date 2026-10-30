@@ -3,13 +3,14 @@ using System.Collections.Generic;
 using System.Text;
 using UnityEngine;
 
-/// <summary>Одно слово из OCR: текст, уверенность 0..100, прямоугольник в пикселях кадра (y вниз от верхнего края), номер строки.</summary>
+/// <summary>Одно слово из OCR: текст, уверенность 0..100, прямоугольник в пикселях кадра (y вниз от верхнего края), номер строки, проход (1 = весь кадр, 2 = увеличенный вырез).</summary>
 public struct OcrWord
 {
     public string text;
     public float confidence;
     public RectInt rect;
     public int line;
+    public int pass;
 }
 
 /// <summary>Движок распознавания текста. Init и Recognize вызываются из рабочего потока (не главного).</summary>
@@ -35,21 +36,186 @@ public sealed class NullRecognizer : ITextRecognizer
 }
 
 /// <summary>
+/// Обработка изображения перед OCR и вырезы для второго прохода (чистые функции, проверяются тестом).
+/// </summary>
+public static class OcrImage
+{
+    /// <summary>Растяжение контраста по перцентилям (2% и 98%): камера даёт тусклый серый, Tesseract любит чёрное на белом.</summary>
+    public static void NormalizeContrast(byte[] src, byte[] dst, int n)
+    {
+        var hist = new int[256];
+        for (int i = 0; i < n; i++) hist[src[i]]++;
+        int lo = 0, hi = 255, acc = 0;
+        int loTarget = (int)(n * 0.02f), hiTarget = (int)(n * 0.98f);
+        for (int v = 0; v < 256; v++) { acc += hist[v]; if (acc >= loTarget) { lo = v; break; } }
+        acc = 0;
+        for (int v = 0; v < 256; v++) { acc += hist[v]; if (acc >= hiTarget) { hi = v; break; } }
+        if (hi - lo < 16) { Buffer.BlockCopy(src, 0, dst, 0, n); return; }
+        var lut = new byte[256];
+        for (int v = 0; v < 256; v++) lut[v] = (byte)Mathf.Clamp(Mathf.RoundToInt((v - lo) * 255f / (hi - lo)), 0, 255);
+        for (int i = 0; i < n; i++) dst[i] = lut[src[i]];
+    }
+
+    /// <summary>Вырез rect из кадра w×h, увеличенный в scale раз (билинейно). Размер результата rect.width*scale × rect.height*scale.</summary>
+    public static byte[] CropScale(byte[] img, int w, int h, RectInt rect, int scale)
+    {
+        int cw = rect.width * scale, ch = rect.height * scale;
+        var dst = new byte[cw * ch];
+        float inv = 1f / scale;
+        for (int y = 0; y < ch; y++)
+        {
+            float sy = rect.y + (y + 0.5f) * inv - 0.5f;
+            int y0 = Mathf.Clamp(Mathf.FloorToInt(sy), 0, h - 1);
+            int y1 = Mathf.Min(y0 + 1, h - 1);
+            float fy = Mathf.Clamp01(sy - y0);
+            int row = y * cw;
+            for (int x = 0; x < cw; x++)
+            {
+                float sx = rect.x + (x + 0.5f) * inv - 0.5f;
+                int x0 = Mathf.Clamp(Mathf.FloorToInt(sx), 0, w - 1);
+                int x1 = Mathf.Min(x0 + 1, w - 1);
+                float fx = Mathf.Clamp01(sx - x0);
+                float a = img[y0 * w + x0] * (1f - fx) + img[y0 * w + x1] * fx;
+                float b = img[y1 * w + x0] * (1f - fx) + img[y1 * w + x1] * fx;
+                dst[row + x] = (byte)(a * (1f - fy) + b * fy + 0.5f);
+            }
+        }
+        return dst;
+    }
+
+    /// <summary>Область для второго прохода: несколько слов рядом.</summary>
+    public sealed class Region
+    {
+        public RectInt rect;
+        public readonly List<OcrWord> words = new List<OcrWord>();
+        public float medianHeight;
+    }
+
+    /// <summary>
+    /// Группирует слова первого прохода (даже неуверенные) в области: соседние по вертикали (зазор ≤ 1.2 высоты)
+    /// и по горизонтали (зазор ≤ 2 высоты). Возвращает не больше maxRegions самых крупных.
+    /// </summary>
+    public static List<Region> FindRegions(List<OcrWord> words, int w, int h, float minConf, int maxRegions)
+    {
+        var cand = new List<OcrWord>();
+        foreach (var o in words)
+        {
+            if (o.confidence < minConf) continue;
+            if (o.rect.height < 6 || o.rect.height > h / 3 || o.rect.width < 4) continue;
+            if (string.IsNullOrWhiteSpace(o.text)) continue;
+            bool alnum = false;
+            foreach (char c in o.text) if (char.IsLetterOrDigit(c)) { alnum = true; break; }
+            if (!alnum) continue;
+            cand.Add(o);
+        }
+        int n = cand.Count;
+        var parent = new int[n];
+        for (int i = 0; i < n; i++) parent[i] = i;
+        int Find(int i) { while (parent[i] != i) { parent[i] = parent[parent[i]]; i = parent[i]; } return i; }
+        for (int i = 0; i < n; i++)
+            for (int j = i + 1; j < n; j++)
+            {
+                RectInt a = cand[i].rect, b = cand[j].rect;
+                float hh = Math.Max(a.height, b.height);
+                int vGap = Math.Max(0, Math.Max(a.yMin, b.yMin) - Math.Min(a.yMax, b.yMax));
+                int hGap = Math.Max(0, Math.Max(a.xMin, b.xMin) - Math.Min(a.xMax, b.xMax));
+                if (vGap <= 1.2f * hh && hGap <= 2f * hh)
+                {
+                    int ra = Find(i), rb = Find(j);
+                    if (ra != rb) parent[ra] = rb;
+                }
+            }
+        var map = new Dictionary<int, Region>();
+        for (int i = 0; i < n; i++)
+        {
+            int r = Find(i);
+            if (!map.TryGetValue(r, out var reg)) { reg = new Region { rect = cand[i].rect }; map[r] = reg; }
+            else reg.rect = Union(reg.rect, cand[i].rect);
+            reg.words.Add(cand[i]);
+        }
+        var list = new List<Region>(map.Values);
+        foreach (var reg in list)
+        {
+            var hs = new List<int>();
+            foreach (var o in reg.words) hs.Add(o.rect.height);
+            hs.Sort();
+            reg.medianHeight = hs[hs.Count / 2];
+        }
+        list.Sort((a, b) => (b.rect.width * b.rect.height).CompareTo(a.rect.width * a.rect.height));
+        if (list.Count > maxRegions) list.RemoveRange(maxRegions, list.Count - maxRegions);
+        return list;
+    }
+
+    public static RectInt Union(RectInt a, RectInt b)
+    {
+        int x0 = Math.Min(a.xMin, b.xMin), y0 = Math.Min(a.yMin, b.yMin);
+        int x1 = Math.Max(a.xMax, b.xMax), y1 = Math.Max(a.yMax, b.yMax);
+        return new RectInt(x0, y0, x1 - x0, y1 - y0);
+    }
+
+    /// <summary>Расширить прямоугольник на margin и обрезать по кадру.</summary>
+    public static RectInt Expand(RectInt r, int margin, int w, int h)
+    {
+        int x0 = Math.Max(0, r.xMin - margin), y0 = Math.Max(0, r.yMin - margin);
+        int x1 = Math.Min(w, r.xMax + margin), y1 = Math.Min(h, r.yMax + margin);
+        return new RectInt(x0, y0, Math.Max(1, x1 - x0), Math.Max(1, y1 - y0));
+    }
+
+    /// <summary>Качество набора слов: средняя уверенность, взвешенная по длине (−1, если слов нет).</summary>
+    public static float Score(List<OcrWord> words)
+    {
+        float sum = 0f, wsum = 0f;
+        foreach (var o in words)
+        {
+            int len = 0;
+            foreach (char c in o.text) if (char.IsLetterOrDigit(c)) len++;
+            if (len == 0) continue;
+            sum += o.confidence * len;
+            wsum += len;
+        }
+        return wsum > 0f ? sum / wsum : -1f;
+    }
+}
+
+/// <summary>
 /// Tesseract OCR через библиотеку Tesseract4Android (Assets/Plugins/Android/tesseract4android-4.8.0.aar, Tesseract 5.5, только arm64).
 /// Языковые данные: Assets/StreamingAssets/tessdata/rus.traineddata, eng.traineddata (tessdata_fast); SignReader копирует их
 /// в Application.persistentDataPath/tesseract/tessdata при первом запуске.
-/// Режим: только LSTM, разрежённый текст (PSM 11): ищет отдельные надписи по всему кадру, а не страницу текста.
+///
+/// Два прохода: (1) весь кадр после растяжения контраста, режим «разрежённый текст» (PSM 11) - находит, где текст;
+/// (2) каждая область текста вырезается с полем, увеличивается так, чтобы высота строки стала ~targetTextHeight пикселей,
+/// и распознаётся как один блок (PSM 6). Берётся тот результат, у которого выше взвешенная уверенность.
+/// Мелкий текст табличек в 1280×960 имеет высоту 10-25 px, а Tesseract уверенно читает от ~30 px, поэтому второй проход важен.
 /// </summary>
 public sealed class TesseractRecognizer : ITextRecognizer
 {
     const int OemLstmOnly = 1;
+    const int PsmSingleBlock = 6;
     const int PsmSparseText = 11;
     const int RilTextline = 2, RilWord = 3;
 
+    public bool twoPass = true;
+    public bool normalizeContrast = true;
+    public bool useWhitelist = true;
+    public int targetTextHeight = 32;
+    public int maxScale = 4;
+    public int maxRegions = 6;
+    /// <summary>Слова первого прохода с уверенностью ниже этой не образуют областей для второго.</summary>
+    public float regionMinConf = 10f;
+
+    /// <summary>Статистика последнего кадра для журнала.</summary>
+    public int lastPass1Words, lastRegions, lastPass2Words;
+    public float lastPass1Ms, lastPass2Ms;
+
     AndroidJavaObject api;
+    byte[] work;
+    sbyte[] signed;
     public bool Ready { get; private set; }
     public string Status { get; private set; } = "не запущен";
     public string Version { get; private set; } = "?";
+
+    const string Whitelist = "АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯабвгдеёжзийклмнопрстуфхцчшщъыьэюя" +
+                             "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 -.,:/№()";
 
     public bool Init(string dataDir, string languages)
     {
@@ -65,6 +231,7 @@ public sealed class TesseractRecognizer : ITextRecognizer
             }
             api.Call("setPageSegMode", PsmSparseText);
             api.Call<bool>("setVariable", "preserve_interword_spaces", "1");
+            if (useWhitelist) api.Call<bool>("setVariable", "tessedit_char_whitelist", Whitelist);
             try { Version = api.Call<string>("getVersion"); } catch { Version = "?"; }
             Ready = true;
             Status = "Tesseract " + Version + " (" + languages + ")";
@@ -81,16 +248,81 @@ public sealed class TesseractRecognizer : ITextRecognizer
     public void Recognize(byte[] gray, int width, int height, List<OcrWord> result)
     {
         result.Clear();
+        lastPass1Words = lastRegions = lastPass2Words = 0;
+        lastPass1Ms = lastPass2Ms = 0f;
         if (!Ready || api == null || gray == null || gray.Length < width * height) return;
 
-        // Java byte[] = sbyte[] в Unity. 1 байт на пиксель, bytes per line = width.
-        var signed = new sbyte[width * height];
-        Buffer.BlockCopy(gray, 0, signed, 0, width * height);
+        int n = width * height;
+        byte[] img = gray;
+        if (normalizeContrast)
+        {
+            if (work == null || work.Length != n) work = new byte[n];
+            OcrImage.NormalizeContrast(gray, work, n);
+            img = work;
+        }
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var pass1 = new List<OcrWord>();
+        RunPass(img, width, height, PsmSparseText, pass1, 0, 0, 1, 0, 1);
+        lastPass1Ms = (float)sw.Elapsed.TotalMilliseconds;
+        lastPass1Words = pass1.Count;
+
+        if (!twoPass || pass1.Count == 0)
+        {
+            result.AddRange(pass1);
+            return;
+        }
+
+        sw.Restart();
+        var regions = OcrImage.FindRegions(pass1, width, height, regionMinConf, maxRegions);
+        lastRegions = regions.Count;
+        int lineBase = 0;
+        var pass2 = new List<OcrWord>();
+        foreach (var reg in regions)
+        {
+            int scale = Mathf.Clamp(Mathf.RoundToInt(targetTextHeight / Mathf.Max(4f, reg.medianHeight)), 1, maxScale);
+            int margin = Mathf.Max(8, Mathf.RoundToInt(reg.medianHeight * 0.8f));
+            RectInt crop = OcrImage.Expand(reg.rect, margin, width, height);
+            long pixels = (long)crop.width * scale * crop.height * scale;
+            if (pixels > 4_000_000L) scale = Mathf.Max(1, (int)Math.Sqrt(4_000_000.0 / ((long)crop.width * crop.height)));
+
+            pass2.Clear();
+            byte[] sub = OcrImage.CropScale(img, width, height, crop, scale);
+            RunPass(sub, crop.width * scale, crop.height * scale, PsmSingleBlock, pass2, crop.x, crop.y, scale, lineBase, 2);
+
+            if (OcrImage.Score(pass2) >= OcrImage.Score(reg.words))
+            {
+                result.AddRange(pass2);
+                lastPass2Words += pass2.Count;
+            }
+            else
+            {
+                foreach (var o in reg.words)
+                {
+                    var c = o;
+                    c.line = lineBase + o.line;
+                    result.Add(c);
+                }
+            }
+            lineBase += 100;
+        }
+        lastPass2Ms = (float)sw.Elapsed.TotalMilliseconds;
+    }
+
+    /// <summary>Один вызов Tesseract: картинка img (w×h, серый, сверху вниз). Рамки слов переводятся в координаты исходного кадра.</summary>
+    void RunPass(byte[] img, int w, int h, int psm, List<OcrWord> outWords, int offX, int offY, int scale, int lineBase, int pass)
+    {
+        int n = w * h;
+        if (signed == null || signed.Length < n) signed = new sbyte[n];
+        Buffer.BlockCopy(img, 0, signed, 0, n);
+        sbyte[] exact = signed;
+        if (signed.Length != n) { exact = new sbyte[n]; Buffer.BlockCopy(img, 0, exact, 0, n); }
 
         AndroidJavaObject it = null;
         try
         {
-            api.Call("setImage", signed, width, height, 1, width);
+            api.Call("setPageSegMode", psm);
+            api.Call("setImage", exact, w, h, 1, w);
             string all = api.Call<string>("getUTF8Text");   // здесь выполняется само распознавание
             if (string.IsNullOrWhiteSpace(all)) return;
 
@@ -105,12 +337,15 @@ public sealed class TesseractRecognizer : ITextRecognizer
                 float conf = it.Call<float>("confidence", RilWord);
                 int[] box = it.Call<int[]>("getBoundingBox", RilWord);   // left, top, right, bottom
                 if (string.IsNullOrEmpty(t) || box == null || box.Length < 4) continue;
-                result.Add(new OcrWord
+                int x0 = offX + box[0] / scale, y0 = offY + box[1] / scale;
+                int x1 = offX + (box[2] + scale - 1) / scale, y1 = offY + (box[3] + scale - 1) / scale;
+                outWords.Add(new OcrWord
                 {
                     text = t,
                     confidence = conf,
-                    line = Math.Max(0, line),
-                    rect = new RectInt(box[0], box[1], Math.Max(1, box[2] - box[0]), Math.Max(1, box[3] - box[1]))
+                    line = lineBase + Math.Max(0, line),
+                    pass = pass,
+                    rect = new RectInt(x0, y0, Math.Max(1, x1 - x0), Math.Max(1, y1 - y0))
                 });
             } while (it.Call<bool>("next", RilWord));
         }
@@ -244,13 +479,6 @@ public static class SignText
         public float confSum;
     }
 
-    static RectInt Union(RectInt a, RectInt b)
-    {
-        int x0 = Math.Min(a.xMin, b.xMin), y0 = Math.Min(a.yMin, b.yMin);
-        int x1 = Math.Max(a.xMax, b.xMax), y1 = Math.Max(a.yMax, b.yMax);
-        return new RectInt(x0, y0, x1 - x0, y1 - y0);
-    }
-
     /// <summary>
     /// Отсеивает мусорные слова, собирает слова в строки (по номеру строки OCR), строки, лежащие близко друг под другом,
     /// объединяет в одну табличку. Текст таблички - строки сверху вниз через пробел.
@@ -269,7 +497,7 @@ public static class SignText
             }
             var nw = w; nw.text = t;
             ln.words.Add(nw);
-            ln.rect = ln.words.Count == 1 ? w.rect : Union(ln.rect, w.rect);
+            ln.rect = ln.words.Count == 1 ? w.rect : OcrImage.Union(ln.rect, w.rect);
             ln.confSum += w.confidence;
         }
 
@@ -321,7 +549,7 @@ public static class SignText
             {
                 if (sb.Length > 0) sb.Append(' ');
                 sb.Append(ln.text);
-                rect = Union(rect, ln.rect);
+                rect = OcrImage.Union(rect, ln.rect);
                 conf += ln.confSum;
                 wc += ln.words.Count;
             }
