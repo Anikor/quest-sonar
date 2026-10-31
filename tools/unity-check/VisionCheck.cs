@@ -176,6 +176,12 @@ public static class VisionCheck
         var ps = SignText.GroupIntoSigns(pieces, 60f, 1.0f, 1280, 960);
         Check(ps.Count == 1 && ps[0].text == "ACEST SPATIU FOST, DOTAT", $"куски строки склеены: '{(ps.Count > 0 ? ps[0].text : "-")}' (табличек {ps.Count}; ожидается 'ACEST SPATIU FOST, DOTAT' и без MWORK)");
 
+        // номер кабинета в тексте таблички
+        Check(SignText.ExtractRoomNumber("3-212, DEPARTAMENT INFORMATICĂ") == "3-212" && SignText.ExtractRoomNumber("LABORATOR 212") == "212"
+              && SignText.ExtractRoomNumber("CAB. 101A") == "101A" && SignText.ExtractRoomNumber("TEAMWORK") == null
+              && SignText.ExtractRoomNumber("PROIECT 2024") == null && SignText.ExtractRoomNumber("01001001 01000001") == null,
+              "номер кабинета: 3-212 / 212 / 101A находятся, TEAMWORK / 2024 / двоичный код - нет");
+
         // ---------------- 3. TextTracker
         var tracker = new TextTracker { needed = 2, similarity = 0.75f, forgetAfter = 10f };
         var confirmed = new List<TextTracker.Track>();

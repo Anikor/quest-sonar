@@ -574,6 +574,39 @@ public static class SignText
         return true;
     }
 
+    /// <summary>
+    /// Номер кабинета в тексте таблички: «3-212», «212», «101A», «2-15». Такая табличка висит у двери, поэтому она же
+    /// становится дверью для звука и голоса. Годы и длинные числа (2024, 01001001) не считаются. null = номера нет.
+    /// </summary>
+    public static string ExtractRoomNumber(string text)
+    {
+        if (string.IsNullOrEmpty(text)) return null;
+        foreach (string raw in text.Split(' ', ',', ';', '№'))
+        {
+            string t = raw.Trim('.', ':', '-', '/');
+            if (t.Length < 2 || t.Length > 6) continue;
+            int dash = t.IndexOf('-');
+            if (dash > 0)
+            {
+                string a = t.Substring(0, dash), b = t.Substring(dash + 1);
+                if (a.Length >= 1 && a.Length <= 2 && b.Length >= 2 && b.Length <= 4 && AllDigits(a) && AllDigits(b)) return t;
+                continue;
+            }
+            // 3 цифры, можно с одной буквой в конце (101A)
+            string digits = t, suffix = "";
+            if (t.Length > 1 && char.IsLetter(t[t.Length - 1])) { digits = t.Substring(0, t.Length - 1); suffix = t.Substring(t.Length - 1); }
+            if (digits.Length == 3 && AllDigits(digits) && suffix.Length <= 1) return t;
+        }
+        return null;
+    }
+
+    static bool AllDigits(string s)
+    {
+        if (s.Length == 0) return false;
+        foreach (char c in s) if (!char.IsDigit(c)) return false;
+        return true;
+    }
+
     public static int Levenshtein(string a, string b)
     {
         if (string.IsNullOrEmpty(a)) return b?.Length ?? 0;

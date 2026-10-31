@@ -101,6 +101,17 @@ public class DoorFinder : MonoBehaviour
     float tick, sceneTick, dumpTick;
     int scanIndex, mapDumps;
 
+    /// <summary>Дверь по табличке с номером кабинета (сообщает SignReader): положение таблички и номер.</summary>
+    class SignDoor
+    {
+        public Vector3 pos;
+        public string number;
+        public float lastSeen;
+    }
+    readonly List<SignDoor> signDoors = new List<SignDoor>();
+    [Tooltip("Дверь по табличке держится столько секунд после последнего чтения таблички")]
+    public float signDoorHold = 30f;
+
     // сигнал двери
     AudioSource cueSrc;
     AudioClip clipKnock;
@@ -172,14 +183,53 @@ public class DoorFinder : MonoBehaviour
         map.mapMarks.Clear();
         foreach (var t in tracks) if (t.reported) map.mapMarks.Add(t.center);
         foreach (var s in sceneDoorCenters) map.mapMarks.Add(s);
+        foreach (var s in signDoors) map.mapMarks.Add(s.pos);
+    }
+
+    // ---------------------------------------------------------------- двери по табличкам
+    /// <summary>Табличка с номером кабинета прочитана: дверь здесь. Вызывает SignReader (главный поток).</summary>
+    public void ReportSignDoor(Vector3 pos, string number)
+    {
+        float now = Time.time;
+        SignDoor sd = null;
+        foreach (var s in signDoors)
+            if (s.number == number || Flat2(s.pos, pos) < 1.5f * 1.5f) { sd = s; break; }
+        if (sd == null)
+        {
+            sd = new SignDoor();
+            signDoors.Add(sd);
+            VisionLog.Event("sign_door", $"\"number\":{VisionLog.Str(number)},\"pos\":{VisionLog.V(pos)}");
+        }
+        sd.pos = pos;
+        sd.number = number;
+        sd.lastSeen = now;
+        SonarLandmarks.Report(SonarLandmarks.MakeId(LandmarkKind.Door, pos, 1.0f), LandmarkKind.Door, pos);
+    }
+
+    /// <summary>Слово «дверь» на языке голоса.</summary>
+    public static string DoorWord()
+    {
+        string lang = SpeechOutput.Instance != null ? SpeechOutput.Instance.language : "";
+        if (lang.StartsWith("ro")) return "ușă";
+        if (lang.StartsWith("ru")) return "дверь";
+        return "door";
     }
 
     // ---------------------------------------------------------------- сигнал двери
-    /// <summary>Ближайшая дверь (по карте или из модели комнаты) в секторе cueYaw и ближе cueRange; -1 = нет.</summary>
+    /// <summary>Ближайшая дверь (по карте, из модели комнаты или по табличке) в секторе cueYaw и ближе cueRange.</summary>
     bool NearestDoorForCue(out Vector3 center, out float dist, out float yaw, out int key)
     {
         center = Vector3.zero; dist = float.MaxValue; yaw = 0f; key = 0;
         Vector3 hp = head.position;
+        float now = Time.time;
+        signDoors.RemoveAll(s => now - s.lastSeen > signDoorHold);
+        foreach (var s in signDoors)
+        {
+            float d = Mathf.Sqrt(Flat2(s.pos, hp));
+            float y = YawTo(s.pos);
+            if (d > cueRange || Mathf.Abs(y) > cueYaw || d >= dist) continue;
+            center = s.pos; dist = d; yaw = y; key = 2000000 + (s.number.GetHashCode() & 0x7FFFFF);
+        }
         foreach (var t in tracks)
         {
             if (!t.reported) continue;
@@ -214,7 +264,8 @@ public class DoorFinder : MonoBehaviour
             VisionLog.Event("door_knock", $"\"dist\":{VisionLog.F(d)},\"yaw\":{VisionLog.F(yaw)},\"key\":{key},\"volume\":{VisionLog.F(cueSrc.volume)},\"clip\":{VisionLog.F(clipKnock != null ? clipKnock.length : -1f)}");
         }
 
-        if (doorVoice && (!lastVoice.TryGetValue(key, out float tv) || now - tv >= voiceRepeat))
+        // дверь по табличке уже названа голосом вместе с текстом таблички («ușă 3-212, …»): только звонок
+        if (doorVoice && key < 2000000 && (!lastVoice.TryGetValue(key, out float tv) || now - tv >= voiceRepeat))
         {
             lastVoice[key] = now;
             string phrase = DoorPhrase(yaw);
@@ -511,7 +562,7 @@ public class DoorFinder : MonoBehaviour
             string side = yaw < -10f ? "слева" : yaw > 10f ? "справа" : "прямо";
             status = $"Двери: по карте {mapDoors}, из модели {sceneDoors}; ближайшая {Mathf.Sqrt(bd):F1} м {side}, ширина {nearest.width:F1} м";
         }
-        else status = $"Двери: по карте {mapDoors}, из модели {sceneDoors}, кандидатов {tracks.Count}";
+        else status = $"Двери: по карте {mapDoors}, из модели {sceneDoors}, по табличкам {signDoors.Count}, кандидатов {tracks.Count}";
     }
 
     void OnDestroy()

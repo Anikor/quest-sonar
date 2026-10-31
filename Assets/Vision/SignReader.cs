@@ -306,6 +306,9 @@ public class SignReader : MonoBehaviour
             int id = SonarLandmarks.MakeId(LandmarkKind.Text, pos, 0.7f);
             SonarLandmarks.Report(id, LandmarkKind.Text, pos, tr.text);
             lastText = tr.text;
+            // табличка с номером кабинета висит у двери: это и есть дверь (датчик глубины закрытую дверь не видит)
+            string room = SignText.ExtractRoomNumber(tr.text);
+            if (room != null && byDepth && DoorFinder.Instance != null) DoorFinder.Instance.ReportSignDoor(pos, room);
             // Подтверждённую табличку читаем вслух сами, один раз на трек, и только одну (самую крупную) за скан:
             // звук (AudioSonar) озвучивает ориентир только ближе 3 м и в секторе ±50°. Повторы гасит SpeechOutput.repeatCooldown.
             if (speakConfirmed && !speakAfterScan && !tr.announced)
@@ -320,7 +323,9 @@ public class SignReader : MonoBehaviour
         if (toSpeak != null)
         {
             toSpeak.announced = true;
-            SpeechOutput.Speak(toSpeak.text, false);
+            // с номером кабинета говорим «ușă 3-212, …»: слепому важно, что это дверь
+            string room = SignText.ExtractRoomNumber(toSpeak.text);
+            SpeechOutput.Speak(room != null ? DoorFinder.DoorWord() + " " + toSpeak.text : toSpeak.text, false);
         }
         status = signs.Count > 0 ? $"видно надписей: {signs.Count}, {lastOcrMs:F0} мс" : $"текста не видно, {lastOcrMs:F0} мс";
         seenText = signs.Count > 0 ? signs[0].text : "";

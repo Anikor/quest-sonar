@@ -220,23 +220,32 @@ public static class NavZones
             int j = i0 + 1;
             while (j < n && dist[j] > dL + GapTol) j++;
             if (j >= n) break;                                   // проём не закрыт справа в пределах скана
-            if (!tall[j] || Mathf.Abs(dist[j] - dL) > sameWallTol) { i0 = j; continue; }
+            if (!tall[j]) { i0 = j; continue; }
 
             Vector3 a = pts[i0], b = pts[j];
             float width = Vector2.Distance(new Vector2(a.x, a.z), new Vector2(b.x, b.z));
-            if (width >= minWidth && width <= maxWidth)
+            // Дверь в боковой стене коридора видна под углом: косяки на разных расстояниях по лучам, поэтому
+            // сравнивается не расстояние, а ширина между косяками; слишком косой взгляд (линия косяков почти
+            // вдоль луча) не считается: это край стены, а не проём.
+            Vector3 along = b - a; along.y = 0f;
+            Vector3 center = (a + b) * 0.5f;
+            Vector3 toC = center - origin;
+            toC.y = 0f;
+            float cosObl = along.sqrMagnitude > 1e-6f && toC.sqrMagnitude > 1e-6f
+                ? Mathf.Abs(Vector3.Dot(along.normalized, toC.normalized)) : 1f;
+            if (width >= minWidth && width <= maxWidth && cosObl < 0.94f && Mathf.Abs(dist[j] - dL) <= width * 1.5f + sameWallTol)
             {
-                Vector3 center = (a + b) * 0.5f;
-                Vector3 toC = center - origin;
-                toC.y = 0f;
-                // Косяки должны быть частью стены: высокие клетки продолжаются от косяка в сторону от проёма.
-                // Иначе дверью становится любой зазор между двумя высокими предметами (шкаф и монитор, два человека).
-                // хотя бы один косяк в стене (второй может быть краем открытой двери или шкафом рядом с проёмом)
-                bool jambsOk = !requireWallJambs || WallSupport(cell, cellSize, a, a - b) || WallSupport(cell, cellSize, b, b - a);
-                float depth = jambsOk && toC.magnitude >= minDistance
-                    ? Corridor(cell, cellSize, center, toC, 0f, 3f, cellSize, out _)
+                // свободно ли за проёмом: смотрим не вдоль луча, а перпендикулярно линии косяков, вглубь
+                Vector3 normal = new Vector3(along.z, 0f, -along.x).normalized;
+                if (Vector3.Dot(normal, toC) < 0f) normal = -normal;
+                float depth = toC.magnitude >= minDistance
+                    ? Corridor(cell, cellSize, center, normal, 0f, 3f, cellSize, out _)
                     : -1f;
-                if (depth >= minDepthBeyond)
+                // Косяк должен быть частью стены (высокие клетки продолжаются от него в сторону от проёма), хватает одной
+                // стороны: вторая бывает краем открытой створки. Без этого дверью становится любой зазор между шкафами.
+                bool jambsOk = !requireWallJambs
+                               || WallSupport(cell, cellSize, a, a - b) || WallSupport(cell, cellSize, b, b - a);
+                if (jambsOk && depth >= minDepthBeyond)
                 {
                     result.Add(new Passage
                     {
