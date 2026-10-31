@@ -41,10 +41,10 @@ public class OperatingModeController : MonoBehaviour
     [Tooltip("Сколько держать стик отклонённым, сек (защита от случайного задевания на ходу)")]
     public float holdToSwitch = 0.3f;
     [Tooltip("Без готового голоса режим не меняется (только возврат в навигацию)")]
-    public bool requireVoice = true;
+    public bool requireVoice = false;
     public bool tone = true;
     [Range(0f, 1f)] public float toneVolume = 0.7f;
-    public bool vibrate = true;
+    public bool vibrate = false;
 
     [Header("Кнопки вне режима «Эксперимент»")]
     [Tooltip("Левый стик нажать: назвать текущий режим")]
@@ -417,7 +417,7 @@ public class OperatingModeController : MonoBehaviour
                 if (SignReaderBridge.ReadNow(SignReader.Instance, out string problem))
                 {
                     if (tone && toneSrc != null) toneSrc.PlayOneShot(actionClip, toneVolume);
-                    ModeVoice.Say(ModeVoice.T("Читаю", "Citesc", "Reading"));
+                    ModeVoice.SayResult(ModeVoice.T("Читаю", "Citesc", "Reading"));
                 }
                 else Refuse(problem);
                 break;
@@ -458,7 +458,7 @@ public class OperatingModeController : MonoBehaviour
 
         if (best == null)
         {
-            ModeVoice.Say(ModeVoice.T("Дверей и окон рядом не найдено", "Nu am găsit uși sau ferestre în apropiere", "No doors or windows nearby"));
+            ModeVoice.SayResult(ModeVoice.T("Дверей и окон рядом не найдено", "Nu am găsit uși sau ferestre în apropiere", "No doors or windows nearby"));
             return;
         }
         if (tone && toneSrc != null) toneSrc.PlayOneShot(actionClip, toneVolume);
@@ -467,7 +467,7 @@ public class OperatingModeController : MonoBehaviour
             : ModeVoice.T("Ближайшее окно", "Cea mai apropiată fereastră", "Nearest window");
         string dist = bestD < 1f ? ModeVoice.T("меньше метра", "sub un metru", "less than a meter")
                                  : ModeVoice.Meters(Mathf.Round(bestD * 2f) / 2f);
-        ModeVoice.Say(what + " " + ModeVoice.Side(bestYaw) + ", " + dist);
+        ModeVoice.SayResult(what + " " + ModeVoice.Side(bestYaw) + ", " + dist);
     }
 
     string ModeHint(OperatingMode m)
