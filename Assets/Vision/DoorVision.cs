@@ -20,16 +20,20 @@ public class DoorVision : MonoBehaviour
 
     [Header("Нейросеть")]
     public bool detectDoors = true;
-    [Tooltip("Имя модели в Resources (ONNX, импортированный Sentis)")]
-    public string modelName = "doors";
-    [Tooltip("Как часто распознавать, сек (одно распознавание ~0.1-0.2 с на GPU)")]
-    public float detectInterval = 1.0f;
+    [Tooltip("Имя модели в Resources (ONNX, импортированный Sentis). doors-oiv7 = YOLOv8n Open Images V7 (601 класс, лёгкая), doors = YOLOv8s только двери (тяжёлая)")]
+    public string modelName = "doors-oiv7";
+    [Tooltip("Индекс класса «дверь» в выходе сети (-1 = брать максимум по всем классам; для doors-oiv7 задаётся скриптом экспорта)")]
+    public int doorClass = -1;
+    [Tooltip("Как часто распознавать, сек. Сеть делит GPU с рендером и глубиной: чаще 1 с заметно тормозит сонар")]
+    public float detectInterval = 1.5f;
+    [Tooltip("Не распознавать, пока голова поворачивается быстрее, град/с (смазанный кадр)")]
+    public float maxHeadSpeedDeg = 40f;
     [Tooltip("Порог уверенности сети (0..1)")]
-    [Range(0.1f, 0.95f)] public float confidence = 0.5f;
+    [Range(0.1f, 0.95f)] public float confidence = 0.35f;
     [Tooltip("Порог перекрытия рамок для слияния дубликатов")]
     [Range(0.1f, 0.9f)] public float nmsIou = 0.5f;
-    [Tooltip("Размер входа сети (обучена на 640)")]
-    public int inputSize = 640;
+    [Tooltip("Размер входа сети; берётся из модели, если она его задаёт")]
+    public int inputSize = 416;
     [Tooltip("Рамка двери должна быть выше этой доли кадра (далёкие и мелкие не считаем)")]
     [Range(0.05f, 0.9f)] public float minBoxHeight = 0.18f;
 
@@ -100,7 +104,19 @@ public class DoorVision : MonoBehaviour
             model = ModelLoader.Load(asset);
             worker = new Worker(model, BackendType.GPUCompute);
             var sb = new StringBuilder();
-            foreach (var i in model.inputs) sb.Append(i.name).Append(':').Append(i.shape.ToString()).Append(' ');
+            foreach (var i in model.inputs)
+            {
+                sb.Append(i.name).Append(':').Append(i.shape.ToString()).Append(' ');
+                // вход [1,3,H,W]: размер берём из модели
+                if (i.shape.rank == 4 && i.shape.IsStatic())
+                {
+                    var ts = i.shape.ToTensorShape();
+                    if (ts[3] > 0) inputSize = ts[3];
+                }
+            }
+            // индекс класса «дверь» из файла doors-oiv7.txt рядом с моделью (его пишет скрипт экспорта), если не задан
+            var idx = Resources.Load<TextAsset>(modelName + "-door-class");
+            if (doorClass < 0 && idx != null && int.TryParse(idx.text.Trim(), out int dc)) doorClass = dc;
             foreach (var o in model.outputs) sb.Append("-> ").Append(o.name).Append(' ');
             status = "сеть загружена";
             VisionLog.Event("doorvision", $"\"ok\":true,\"model\":{VisionLog.Str(sb.ToString())},\"interval\":{VisionLog.F(detectInterval)},\"confidence\":{VisionLog.F(confidence)}");
@@ -135,6 +151,7 @@ public class DoorVision : MonoBehaviour
         }
 
         if (!detectDoors || now < nextRun || !feed.IsReady) return;
+        if (SignReader.Instance != null && SignReader.Instance.headSpeedDeg > maxHeadSpeedDeg) return;   // смаз
         Texture tex = feed.CurrentTexture;
         if (tex == null) return;
         nextRun = now + detectInterval;
@@ -171,7 +188,8 @@ public class DoorVision : MonoBehaviour
         for (int i = 0; i < n; i++)
         {
             float best = 0f;
-            for (int c = 0; c < classes; c++) { float v = t[0, 4 + c, i]; if (v > best) best = v; }
+            if (doorClass >= 0 && doorClass < classes) best = t[0, 4 + doorClass, i];
+            else for (int c = 0; c < classes; c++) { float v = t[0, 4 + c, i]; if (v > best) best = v; }
             if (best < confidence) continue;
             boxes.Add(new Box { x = t[0, 0, i] * sx, y = t[0, 1, i] * sy, w = t[0, 2, i] * sx, h = t[0, 3, i] * sy, score = best });
         }
