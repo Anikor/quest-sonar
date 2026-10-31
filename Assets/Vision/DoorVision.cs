@@ -91,7 +91,13 @@ public class DoorVision : MonoBehaviour
         raycaster = FindFirstObjectByType<EnvironmentRaycastManager>();
         feed = PassthroughCameraFeed.GetOrCreate();
 
-        var asset = Resources.Load<ModelAsset>(modelName);
+        // своя модель на дверях помещений (doors-indoor, обучена на DoorDetect) предпочтительнее общей (doors-oiv7)
+        ModelAsset asset = null;
+        foreach (string candidate in new[] { "doors-indoor", modelName, "doors-oiv7" })
+        {
+            asset = Resources.Load<ModelAsset>(candidate);
+            if (asset != null) { modelName = candidate; break; }
+        }
         if (asset == null)
         {
             status = "нет модели Resources/" + modelName + ".onnx";
