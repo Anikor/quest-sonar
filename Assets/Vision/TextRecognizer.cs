@@ -377,20 +377,23 @@ public sealed class TesseractRecognizer : ITextRecognizer
                 foreach (var reg in regions)
                 {
                     if (shown++ >= 3) break;
+                    // Номер кабинета над названием в 3-4 раза выше строк текста: на целом кадре Tesseract считает его
+                    // графикой и выбрасывает (проверено на фото таблички), а в отдельном вырезе читает уверенно.
+                    // Полоса: от 6 высот строки над областью до её верха, по ширине с полем в 2 высоты.
                     int h = Mathf.Max(8, Mathf.RoundToInt(reg.medianHeight));
-                    int y0 = Math.Max(0, reg.rect.yMin - h * 3);
-                    int y1 = Math.Max(y0 + 1, reg.rect.yMin - h / 4);
-                    int x0 = Math.Max(0, reg.rect.xMin - h), x1 = Math.Min(width, reg.rect.xMax + h);
-                    if (y1 - y0 < 8 || x1 - x0 < 16) continue;
+                    int y0 = Math.Max(0, reg.rect.yMin - h * 6);
+                    int y1 = Math.Max(y0 + 1, reg.rect.yMin - h / 5);
+                    int x0 = Math.Max(0, reg.rect.xMin - h * 2), x1 = Math.Min(width, reg.rect.xMax + h * 2);
+                    if (y1 - y0 < 12 || x1 - x0 < 24) continue;
                     var strip = new RectInt(x0, y0, x1 - x0, y1 - y0);
-                    int scale = Mathf.Clamp(Mathf.RoundToInt(targetTextHeight / Mathf.Max(8f, (y1 - y0) * 0.5f)), 1, 3);
+                    int scale = Mathf.Clamp(Mathf.RoundToInt(2f * targetTextHeight / Mathf.Max(12f, (y1 - y0) * 0.5f)), 1, 2);
                     for (int pol = 0; pol < 2; pol++)
                     {
                         byte[] src = pol == 1 ? inv : img;
                         if (src == null) continue;
                         nums.Clear();
                         byte[] sub = OcrImage.CropScale(src, width, height, strip, scale);
-                        RunPass(sub, strip.width * scale, strip.height * scale, 7 /* PSM_SINGLE_LINE */, nums, strip.x, strip.y, scale, lineBase, 3, pol == 1);
+                        RunPass(sub, strip.width * scale, strip.height * scale, PsmSingleBlock, nums, strip.x, strip.y, scale, lineBase, 3, pol == 1);
                         foreach (var o in nums)
                         {
                             int digits = 0;
