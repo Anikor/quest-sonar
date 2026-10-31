@@ -51,7 +51,8 @@ public class DoorFinder : MonoBehaviour
     public float holdSeconds = 3f;
 
     [Header("Модель комнаты (MR Utility Kit)")]
-    public bool useSceneModel = true;
+    [Tooltip("Двери из модели комнаты (Space Setup). Выключено: на шлеме пользователя якорь двери стоит там, где склад, и звучал с первой секунды")]
+    public bool useSceneModel = false;
     [Tooltip("Окна из модели комнаты не нужны слепому при ходьбе: выключено")]
     public bool sceneWindows = false;
     public float sceneRange = 6f;
