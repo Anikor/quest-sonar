@@ -388,13 +388,15 @@ public sealed class TesseractRecognizer : ITextRecognizer
                     int y1 = Math.Max(y0 + 1, reg.rect.yMin - h / 5);
                     int x0 = Math.Max(0, reg.rect.xMin + h / 2), x1 = Math.Min(width, reg.rect.xMax - h / 2);
                     if (y1 - y0 < 12 || x1 - x0 < 40) continue;
-                    int sw = x1 - x0;
-                    float[,] windows = { { 0f, 0.6f }, { 0.2f, 0.8f }, { 0.4f, 1f }, { 0f, 1f } };
+                    int stripW = x1 - x0;
+                    // окна от левого края текста: номер обычно слева, справа часто логотип, который ломает чтение
+                    // (на фото таблички: окна 70-90% ширины дают «3-212» в 7 из 8 запусков, окно 100% - ничего)
+                    float[,] windows = { { 0f, 0.7f }, { 0f, 0.8f }, { 0f, 0.85f }, { 0f, 0.9f } };
                     int scale = Mathf.Clamp(Mathf.RoundToInt(2f * targetTextHeight / Mathf.Max(12f, (y1 - y0) * 0.5f)), 1, 2);
                     votes.Clear();
                     for (int wi = 0; wi < windows.GetLength(0); wi++)
                     {
-                        var strip = new RectInt(x0 + (int)(sw * windows[wi, 0]), y0, Math.Max(24, (int)(sw * (windows[wi, 1] - windows[wi, 0]))), y1 - y0);
+                        var strip = new RectInt(x0 + (int)(stripW * windows[wi, 0]), y0, Math.Max(24, (int)(stripW * (windows[wi, 1] - windows[wi, 0]))), y1 - y0);
                         if (strip.xMax > width) strip.width = width - strip.x;
                         for (int pol = 0; pol < 2; pol++)
                         {
