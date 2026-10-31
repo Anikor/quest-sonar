@@ -173,7 +173,7 @@ public static class NavZones
     public static int FindPassages(CellQuery cell, float cellSize, Vector3 origin, Vector3 forward, float scanYaw,
                                    float stepDeg, float maxRange, float minWidth, float maxWidth, float minDepthBeyond,
                                    float start, List<Passage> result, bool tallOnly = false,
-                                   float minDistance = 0f, bool requireWallJambs = false)
+                                   float minDistance = 0f, bool requireWallJambs = false, List<string> debug = null)
     {
         result.Clear();
         forward = Flat(forward);
@@ -233,7 +233,14 @@ public static class NavZones
             toC.y = 0f;
             float cosObl = along.sqrMagnitude > 1e-6f && toC.sqrMagnitude > 1e-6f
                 ? Mathf.Abs(Vector3.Dot(along.normalized, toC.normalized)) : 1f;
-            if (width >= minWidth && width <= maxWidth && cosObl < 0.94f && Mathf.Abs(dist[j] - dL) <= width * 1.5f + sameWallTol)
+            if (debug != null)
+            {
+                float yawA = -scanYaw + i0 * angleStep, yawB = -scanYaw + j * angleStep;
+                debug.Add($"пара лучей {yawA:F0}°..{yawB:F0}°: dL={dL:F2} dR={dist[j]:F2} ширина={width:F2} cosObl={cosObl:F2} центр=({center.x:F1},{center.z:F1}) d={toC.magnitude:F2}");
+            }
+            // порог косого взгляда 0.97 (~14°): по журналу со шлема открытая дверь в стене коридора видна под ~18° и
+            // при пороге 0.94 (~20°) отсекалась
+            if (width >= minWidth && width <= maxWidth && cosObl < 0.97f && Mathf.Abs(dist[j] - dL) <= width * 1.5f + sameWallTol)
             {
                 // свободно ли за проёмом: смотрим не вдоль луча, а перпендикулярно линии косяков, вглубь
                 Vector3 normal = new Vector3(along.z, 0f, -along.x).normalized;
@@ -245,6 +252,7 @@ public static class NavZones
                 // стороны: вторая бывает краем открытой створки. Без этого дверью становится любой зазор между шкафами.
                 bool jambsOk = !requireWallJambs
                                || WallSupport(cell, cellSize, a, a - b) || WallSupport(cell, cellSize, b, b - a);
+                if (debug != null) debug.Add($"   глубина за проёмом={depth:F2} (нужно {minDepthBeyond}), стена у косяка={(jambsOk ? "да" : "нет")} -> {(jambsOk && depth >= minDepthBeyond ? "ДВЕРЬ" : "нет")}");
                 if (jambsOk && depth >= minDepthBeyond)
                 {
                     result.Add(new Passage

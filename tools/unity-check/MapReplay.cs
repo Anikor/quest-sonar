@@ -85,8 +85,10 @@ public static class MapReplay
         }
 
         string name = Path.GetFileName(file);
-        int a = NavZones.FindPassages(q, Cs, head, fwd, 90f, 2f, 5f, 0.6f, 1.6f, 1f, 0.25f, res, true, 0.8f, true);
+        var dbg = new List<string>();
+        int a = NavZones.FindPassages(q, Cs, head, fwd, 90f, 2f, 5f, 0.45f, 1.6f, 1f, 0.25f, res, true, 0.8f, true, dbg);
         string sa = Show(res);
+        if (dbg.Count > 0) Debug.Log("MAPREPLAY-DBG " + name + ":\n  " + string.Join("\n  ", dbg.GetRange(0, Math.Min(dbg.Count, 24))));
         int b = NavZones.FindPassages(q, Cs, head, fwd, 90f, 2f, 5f, 0.6f, 1.6f, 1f, 0.25f, res, true, 0.8f, false);
         string sb2 = Show(res);
         int c2 = NavZones.FindPassages(q, Cs, head, fwd, 90f, 2f, 5f, 0.6f, 1.6f, 0.5f, 0.25f, res, true, 0f, false);

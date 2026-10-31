@@ -28,7 +28,8 @@ public class DoorFinder : MonoBehaviour
     public float scanStepDeg = 2f;
     [Tooltip("Дальше этого проёмы не ищутся, м")]
     public float range = 5f;
-    public float minWidth = 0.6f;
+    [Tooltip("Минимальная ширина проёма, м. Приоткрытая дверь даёт проход уже косяков: по журналу со шлема 0.50 м")]
+    public float minWidth = 0.45f;
     public float maxWidth = 1.6f;
     [Tooltip("За проёмом должно быть свободно хотя бы столько метров (иначе ниша или шкаф)")]
     public float minDepthBeyond = 1f;
