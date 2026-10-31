@@ -239,15 +239,7 @@ public class SignReader : MonoBehaviour
             ProcessResult(now);
         }
 
-        if (readOnGrip && OVRInput.GetDown(OVRInput.Button.SecondaryHandTrigger))
-        {
-            VisionLog.Event("grip", $"\"cameraReady\":{VisionLog.B(feed.IsReady)},\"ocrReady\":{VisionLog.B(ocrReady)}");
-            forceScan = true;
-            speakAfterScan = true;
-            forceSince = now;
-            if (!feed.IsReady) { SpeechOutput.Speak("камера не готова", true); forceScan = false; speakAfterScan = false; }
-            else if (!ocrReady) { SpeechOutput.Speak("распознавание не готово", true); forceScan = false; speakAfterScan = false; }
-        }
+        if (readOnGrip && OVRInput.GetDown(OVRInput.Button.SecondaryHandTrigger)) ReadNow();
 
         bool due = readSigns && now >= nextScan;
         bool still = headSpeedDeg <= maxHeadSpeedDeg || (forceScan && now - forceSince > 1f);
@@ -280,6 +272,18 @@ public class SignReader : MonoBehaviour
             labelTimer = 0f;
             UpdateLabel();
         }
+    }
+
+    /// <summary>«Прочитать то, что перед тобой»: ближайший скан читается вслух сразу, без ожидания подтверждения
+    /// (правый хват; режим «Текст» зовёт это по курку через SignReaderBridge).</summary>
+    public void ReadNow()
+    {
+        VisionLog.Event("grip", $"\"cameraReady\":{VisionLog.B(feed != null && feed.IsReady)},\"ocrReady\":{VisionLog.B(ocrReady)}");
+        if (feed == null || !feed.IsReady) { SpeechOutput.Speak("камера не готова", true); return; }
+        if (!ocrReady) { SpeechOutput.Speak("распознавание не готово", true); return; }
+        forceScan = true;
+        speakAfterScan = true;
+        forceSince = Time.time;
     }
 
     void ProcessResult(float now)
