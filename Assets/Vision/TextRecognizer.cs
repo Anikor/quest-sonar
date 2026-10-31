@@ -373,35 +373,58 @@ public sealed class TesseractRecognizer : ITextRecognizer
             {
                 if (useWhitelist) api.Call<bool>("setVariable", "tessedit_char_whitelist", "0123456789-/");
                 var nums = new List<OcrWord>();
+                var votes = new Dictionary<string, (int count, OcrWord best)>();
                 int shown = 0;
                 foreach (var reg in regions)
                 {
-                    if (shown++ >= 3) break;
+                    if (shown++ >= 2) break;
                     // Номер кабинета над названием в 3-4 раза выше строк текста: на целом кадре Tesseract считает его
-                    // графикой и выбрасывает (проверено на фото таблички), а в отдельном вырезе читает уверенно.
-                    // Полоса: от 6 высот строки над областью до её верха, по ширине с полем в 2 высоты.
+                    // графикой и выбрасывает, а в отдельном вырезе читает (проверено на фото таблички 3-212 локальным
+                    // tesseract 5.4). Вырез не должен захватывать край таблички слева и логотип справа: тогда пусто.
+                    // Поэтому полоса берётся по ширине самого текста (чуть уже) и читается тремя перекрывающимися окнами
+                    // в обеих полярностях; номер выбирается голосованием (убирает «23-212» против «3-212»).
                     int h = Mathf.Max(8, Mathf.RoundToInt(reg.medianHeight));
-                    int y0 = Math.Max(0, reg.rect.yMin - h * 6);
+                    int y0 = Math.Max(0, reg.rect.yMin - (int)(h * 4.5f));
                     int y1 = Math.Max(y0 + 1, reg.rect.yMin - h / 5);
-                    int x0 = Math.Max(0, reg.rect.xMin - h * 2), x1 = Math.Min(width, reg.rect.xMax + h * 2);
-                    if (y1 - y0 < 12 || x1 - x0 < 24) continue;
-                    var strip = new RectInt(x0, y0, x1 - x0, y1 - y0);
+                    int x0 = Math.Max(0, reg.rect.xMin + h / 2), x1 = Math.Min(width, reg.rect.xMax - h / 2);
+                    if (y1 - y0 < 12 || x1 - x0 < 40) continue;
+                    int sw = x1 - x0;
+                    float[,] windows = { { 0f, 0.6f }, { 0.2f, 0.8f }, { 0.4f, 1f }, { 0f, 1f } };
                     int scale = Mathf.Clamp(Mathf.RoundToInt(2f * targetTextHeight / Mathf.Max(12f, (y1 - y0) * 0.5f)), 1, 2);
-                    for (int pol = 0; pol < 2; pol++)
+                    votes.Clear();
+                    for (int wi = 0; wi < windows.GetLength(0); wi++)
                     {
-                        byte[] src = pol == 1 ? inv : img;
-                        if (src == null) continue;
-                        nums.Clear();
-                        byte[] sub = OcrImage.CropScale(src, width, height, strip, scale);
-                        RunPass(sub, strip.width * scale, strip.height * scale, PsmSingleBlock, nums, strip.x, strip.y, scale, lineBase, 3, pol == 1);
-                        foreach (var o in nums)
+                        var strip = new RectInt(x0 + (int)(sw * windows[wi, 0]), y0, Math.Max(24, (int)(sw * (windows[wi, 1] - windows[wi, 0]))), y1 - y0);
+                        if (strip.xMax > width) strip.width = width - strip.x;
+                        for (int pol = 0; pol < 2; pol++)
                         {
-                            int digits = 0;
-                            foreach (char c in o.text) if (char.IsDigit(c)) digits++;
-                            if (digits >= 2 && o.confidence >= 50f) { result.Add(o); lastNumberWords++; }
+                            byte[] src = pol == 1 ? inv : img;
+                            if (src == null) continue;
+                            nums.Clear();
+                            byte[] sub = OcrImage.CropScale(src, width, height, strip, scale);
+                            RunPass(sub, strip.width * scale, strip.height * scale, 7 /* PSM_SINGLE_LINE */, nums, strip.x, strip.y, scale, lineBase, 3, pol == 1);
+                            foreach (var o in nums)
+                            {
+                                string tok = o.text.Trim('-', '/', '.', ' ');
+                                int digits = 0;
+                                foreach (char c in tok) if (char.IsDigit(c)) digits++;
+                                if (digits < 2 || tok.Length > 8 || o.confidence < 40f) continue;
+                                var w = o; w.text = tok;
+                                if (votes.TryGetValue(tok, out var v)) votes[tok] = (v.count + 1, o.confidence > v.best.confidence ? w : v.best);
+                                else votes[tok] = (1, w);
+                            }
                         }
-                        lineBase += 100;
                     }
+                    string bestTok = null; int bestCount = 0; float bestConf = 0f;
+                    foreach (var kv in votes)
+                        if (kv.Value.count > bestCount || (kv.Value.count == bestCount && kv.Value.best.confidence > bestConf))
+                        { bestTok = kv.Key; bestCount = kv.Value.count; bestConf = kv.Value.best.confidence; }
+                    if (bestTok != null)
+                    {
+                        result.Add(votes[bestTok].best);
+                        lastNumberWords++;
+                    }
+                    lineBase += 100;
                 }
             }
             catch (Exception e) { Status = "Tesseract (номера): " + e.Message; }
