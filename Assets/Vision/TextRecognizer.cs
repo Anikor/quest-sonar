@@ -615,13 +615,17 @@ public static class SignText
     /// Отсеивает мусорные слова, собирает слова в строки (по номеру строки OCR), строки, лежащие близко друг под другом,
     /// объединяет в одну табличку. Текст таблички - строки сверху вниз через пробел.
     /// </summary>
-    public static List<SignCandidate> GroupIntoSigns(List<OcrWord> words, float minConfidence, float lineGapFactor = 1.0f)
+    public static List<SignCandidate> GroupIntoSigns(List<OcrWord> words, float minConfidence, float lineGapFactor = 1.0f,
+                                                     int frameWidth = 0, int frameHeight = 0, int edgeMargin = 3)
     {
         var lines = new Dictionary<int, Line>();
         foreach (var w in words)
         {
             string t = Normalize(w.text);
             if (!IsPlausibleWord(t, w.confidence, minConfidence)) continue;
+            // слово, упирающееся в край кадра, обрезано (TEAMWORK -> «MWORK»): не берём
+            if (frameWidth > 0 && (w.rect.xMin <= edgeMargin || w.rect.xMax >= frameWidth - edgeMargin)) continue;
+            if (frameHeight > 0 && (w.rect.yMin <= edgeMargin || w.rect.yMax >= frameHeight - edgeMargin)) continue;
             if (!lines.TryGetValue(w.line, out var ln))
             {
                 ln = new Line { index = w.line, rect = w.rect };
@@ -634,11 +638,46 @@ public static class SignText
         }
 
         var list = new List<Line>(lines.Values);
+
+        // Одна строка таблички может прийти кусками из разных проходов и областей (разные номера строк OCR).
+        // Куски на одной высоте (перекрытие по вертикали >= половины меньшей высоты, зазор по горизонтали <= 3 высоты)
+        // склеиваются в одну строку, иначе голос читает «ACEST SPATIU FOST, DOTAT, CADRUL» с паузами внутри строки.
+        bool mergedAny = true;
+        while (mergedAny)
+        {
+            mergedAny = false;
+            for (int i = 0; i < list.Count && !mergedAny; i++)
+                for (int j = i + 1; j < list.Count; j++)
+                {
+                    RectInt a = list[i].rect, b = list[j].rect;
+                    int overlap = Math.Min(a.yMax, b.yMax) - Math.Max(a.yMin, b.yMin);
+                    int minH = Math.Min(a.height, b.height);
+                    float h = Math.Max(a.height, b.height);
+                    int hGap = Math.Max(0, Math.Max(a.xMin, b.xMin) - Math.Min(a.xMax, b.xMax));
+                    bool sameRow = overlap >= minH * 0.5f && hGap <= 3f * h && Math.Abs(a.height - b.height) <= 0.6f * h;
+                    if (!sameRow) continue;
+                    foreach (var w in list[j].words) list[i].words.Add(w);
+                    list[i].rect = OcrImage.Union(a, b);
+                    list[i].confSum += list[j].confSum;
+                    list.RemoveAt(j);
+                    mergedAny = true;
+                    break;
+                }
+        }
+
         foreach (var ln in list)
         {
             ln.words.Sort((a, b) => a.rect.xMin.CompareTo(b.rect.xMin));
+            // слова, перекрывающие друг друга по горизонтали (одно слово из двух кусков), не дублируются
             var sb = new StringBuilder();
-            foreach (var w in ln.words) { if (sb.Length > 0) sb.Append(' '); sb.Append(w.text); }
+            int lastXMax = int.MinValue;
+            foreach (var w in ln.words)
+            {
+                if (w.rect.xMin < lastXMax - w.rect.width * 0.5f) continue;   // почти целиком внутри предыдущего
+                if (sb.Length > 0) sb.Append(' ');
+                sb.Append(w.text);
+                lastXMax = Math.Max(lastXMax, w.rect.xMax);
+            }
             ln.text = sb.ToString();
         }
 

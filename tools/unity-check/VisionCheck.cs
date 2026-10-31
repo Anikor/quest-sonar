@@ -166,6 +166,16 @@ public static class VisionCheck
             Check(signs[0].words == 3 && signs[0].confidence > 85f, $"слов {signs[0].words}, уверенность {signs[0].confidence:F0}");
         }
 
+        // одна строка кусками из разных проходов (разные номера строк) склеивается без запятой; слово у края кадра отбрасывается
+        var pieces = new List<OcrWord>
+        {
+            W("ACEST", 90f, 100, 300, 80, 24, 0), W("SPATIU", 88f, 190, 301, 90, 23, 7), W("FOST", 85f, 290, 299, 60, 24, 12),
+            W("DOTAT", 86f, 100, 340, 80, 24, 20),
+            W("MWORK", 95f, 1200, 500, 78, 30, 30)   // упирается в правый край кадра 1280
+        };
+        var ps = SignText.GroupIntoSigns(pieces, 60f, 1.0f, 1280, 960);
+        Check(ps.Count == 1 && ps[0].text == "ACEST SPATIU FOST, DOTAT", $"куски строки склеены: '{(ps.Count > 0 ? ps[0].text : "-")}' (табличек {ps.Count}; ожидается 'ACEST SPATIU FOST, DOTAT' и без MWORK)");
+
         // ---------------- 3. TextTracker
         var tracker = new TextTracker { needed = 2, similarity = 0.75f, forgetAfter = 10f };
         var confirmed = new List<TextTracker.Track>();

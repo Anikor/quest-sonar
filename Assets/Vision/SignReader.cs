@@ -284,7 +284,7 @@ public class SignReader : MonoBehaviour
 
     void ProcessResult(float now)
     {
-        signs = SignText.GroupIntoSigns(words, minConfidence);
+        signs = SignText.GroupIntoSigns(words, minConfidence, 1.0f, frame.width, frame.height);
         signsInLastScan = signs.Count;
         tracker.Observe(signs, now, confirmed, updated);
 
