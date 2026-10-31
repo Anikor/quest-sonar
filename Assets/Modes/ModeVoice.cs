@@ -23,14 +23,14 @@ public static class ModeVoice
     /// <summary>Голос готов произносить (на Android запустился хоть один движок; в редакторе всегда true).</summary>
     public static bool VoiceReady { get { return SpeechOutput.Instance != null && SpeechOutput.Instance.ready; } }
 
-    /// <summary>Произнести сразу, оборвав текущую фразу (служебные сообщения должны звучать немедленно).</summary>
     /// <summary>Озвучивать ли служебные сообщения интерфейса (смена режима, значения панели). По просьбе пользователя
     /// (2026-10-31) выключено: при работе стиками голос не нужен, остаются тон и результат действия (SayResult).</summary>
     public static bool uiVoice = false;
 
-    /// <summary>Результат действия режима (прочитанный текст, ближайшая дверь): говорится всегда.</summary>
+    /// <summary>Результат действия режима (прочитанный текст, ближайшая дверь): говорится всегда, обрывая текущую фразу.</summary>
     public static void SayResult(string text) { SpeechOutput.Speak(text, true); }
 
+    /// <summary>Служебное сообщение интерфейса: звучит только при uiVoice, сразу, обрывая текущую фразу.</summary>
     public static void Say(string text) { if (uiVoice) SpeechOutput.Speak(text, true); }
 
     /// <summary>Число для речи: 0.9 → «0,9» (ru, ro) или «0.9» (en), без лишних нулей.</summary>
