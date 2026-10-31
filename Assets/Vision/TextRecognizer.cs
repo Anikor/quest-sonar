@@ -651,7 +651,7 @@ public static class SignText
             float conf = 0f; int wc = 0;
             foreach (var ln in g)
             {
-                if (sb.Length > 0) sb.Append(' ');
+                if (sb.Length > 0) sb.Append(", ");   // запятая = пауза голоса между строками таблички
                 sb.Append(ln.text);
                 rect = OcrImage.Union(rect, ln.rect);
                 conf += ln.confSum;

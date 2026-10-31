@@ -131,8 +131,9 @@ public class SpeechOutput : MonoBehaviour
         }
         lock (gate)
         {
-            if (interrupt) queue.Clear();
-            if (queue.Count < 6) queue.Enqueue(new Phrase { text = text, interrupt = interrupt });
+            // в очереди держим только одну следующую фразу: новая заменяет ожидающую, текущая речь не обрывается
+            queue.Clear();
+            queue.Enqueue(new Phrase { text = text, interrupt = interrupt });
         }
         wake.Set();
     }
@@ -167,6 +168,17 @@ public class SpeechOutput : MonoBehaviour
                 while (true)
                 {
                     Phrase p;
+                    lock (gate)
+                    {
+                        if (queue.Count == 0) break;
+                        p = queue.Peek();
+                    }
+                    // обычная фраза ждёт, пока договорится текущая (не больше 12 с), чтобы речь не накладывалась и не обрывалась
+                    if (!p.interrupt && p.text.Length > 0)
+                    {
+                        int waited = 0;
+                        while (!stopWorker && waited < 12000 && SafeIsSpeaking(tts)) { Thread.Sleep(100); waited += 100; }
+                    }
                     lock (gate)
                     {
                         if (queue.Count == 0) break;
@@ -272,6 +284,11 @@ public class SpeechOutput : MonoBehaviour
         try { tts.Call("shutdown"); } catch { /* не важно */ }
         tts.Dispose();
         return null;
+    }
+
+    static bool SafeIsSpeaking(AndroidJavaObject tts)
+    {
+        try { return tts.Call<bool>("isSpeaking"); } catch { return false; }
     }
 
     static string SafeDefaultEngine(AndroidJavaObject tts)

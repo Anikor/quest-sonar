@@ -159,7 +159,7 @@ public static class VisionCheck
         Check(signs.Count == 2, $"из 6 слов получилось 2 таблички (получено {signs.Count})");
         if (signs.Count == 2)
         {
-            Check(signs[0].text == "КАБИНЕТ 12 ДИРЕКТОР", $"табличка 1: '{signs[0].text}' (ожидается 'КАБИНЕТ 12 ДИРЕКТОР')");
+            Check(signs[0].text == "КАБИНЕТ 12, ДИРЕКТОР", $"табличка 1: '{signs[0].text}' (ожидается 'КАБИНЕТ 12, ДИРЕКТОР': строки через запятую = пауза голоса)");
             Check(signs[1].text == "ВЫХОД", $"табличка 2: '{signs[1].text}'");
             Check(signs[0].rect.xMin == 100 && signs[0].rect.yMin == 100 && signs[0].rect.xMax == 290 && signs[0].rect.yMax == 170,
                   $"прямоугольник таблички 1: {signs[0].rect}");

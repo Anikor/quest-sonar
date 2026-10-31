@@ -51,7 +51,8 @@ public class DoorFinder : MonoBehaviour
 
     [Header("Модель комнаты (MR Utility Kit)")]
     public bool useSceneModel = true;
-    public bool sceneWindows = true;
+    [Tooltip("Окна из модели комнаты не нужны слепому при ходьбе: выключено")]
+    public bool sceneWindows = false;
     public float sceneRange = 6f;
     public float sceneInterval = 3f;
 
@@ -166,6 +167,11 @@ public class DoorFinder : MonoBehaviour
 
         UpdateStatus();
         UpdateCue(now);
+
+        // жёлтые метки дверей на минимапе ObstacleMap
+        map.mapMarks.Clear();
+        foreach (var t in tracks) if (t.reported) map.mapMarks.Add(t.center);
+        foreach (var s in sceneDoorCenters) map.mapMarks.Add(s);
     }
 
     // ---------------------------------------------------------------- сигнал двери
@@ -202,9 +208,10 @@ public class DoorFinder : MonoBehaviour
             Vector3 flat = c - head.position; flat.y = 0f;
             float r = Mathf.Clamp(d, 0.4f, maxSourceDistance);
             cueSrc.transform.position = head.position + (flat.sqrMagnitude > 1e-6f ? flat.normalized : head.forward) * r;
-            cueSrc.volume = cueVolume * Mathf.Lerp(1f, 0.45f, Mathf.Clamp01(d / cueRange));
+            cueSrc.volume = cueVolume * Mathf.Lerp(1f, 0.6f, Mathf.Clamp01(d / cueRange));
             cueSrc.PlayOneShot(clipKnock);
             nextCue = now + cueRepeat;
+            VisionLog.Event("door_knock", $"\"dist\":{VisionLog.F(d)},\"yaw\":{VisionLog.F(yaw)},\"key\":{key},\"volume\":{VisionLog.F(cueSrc.volume)},\"clip\":{VisionLog.F(clipKnock != null ? clipKnock.length : -1f)}");
         }
 
         if (doorVoice && (!lastVoice.TryGetValue(key, out float tv) || now - tv >= voiceRepeat))
@@ -249,28 +256,31 @@ public class DoorFinder : MonoBehaviour
         return a;
     }
 
-    /// <summary>Три деревянных стука («тук-тук-тук»): глухой тон ~170 Гц с быстрым затуханием и щелчком, пауза 0.14 с. Заметно громче и длиннее писков сонара.</summary>
+    /// <summary>
+    /// Сигнал двери: дверной звонок «динь-дон» вверх (660 → 880 Гц, по 0.22 с) дважды. Средние частоты: динамики шлема
+    /// почти не воспроизводят низкий «стук» 170 Гц (его и не было слышно), а писки сонара короче и выше.
+    /// </summary>
     static AudioClip MakeKnockKnock(string name)
     {
-        const float knockLen = 0.13f, gap = 0.14f;
-        const int knocks = 3;
-        int kn = (int)(SampleRate * knockLen), gn = (int)(SampleRate * gap);
-        var data = new float[kn * knocks + gn * (knocks - 1)];
-        var rnd = new System.Random(777);
-        for (int k = 0; k < knocks; k++)
+        float[] freqs = { 660f, 880f, 660f, 880f };
+        const float noteLen = 0.22f, gap = 0.04f, pairGap = 0.25f;
+        int nn = (int)(SampleRate * noteLen), gn = (int)(SampleRate * gap), pg = (int)(SampleRate * pairGap);
+        var data = new float[(nn + gn) * 4 + pg];
+        int off = 0;
+        for (int j = 0; j < freqs.Length; j++)
         {
-            int off = k * (kn + gn);
-            float phase = 0f;
-            for (int i = 0; i < kn; i++)
+            float tau = noteLen * 0.5f;
+            for (int i = 0; i < nn; i++)
             {
                 float t = i / (float)SampleRate;
-                float u = i / (float)kn;
-                float f = 170f * (1f - 0.3f * u);
-                phase += 2f * Mathf.PI * f / SampleRate;
-                float env = Mathf.Clamp01(t / 0.003f) * Mathf.Exp(-t / (knockLen * 0.28f)) * Mathf.Clamp01((knockLen - t) / 0.01f);
-                float click = ((float)rnd.NextDouble() * 2f - 1f) * 0.25f * Mathf.Exp(-t / 0.002f);
-                data[off + i] = (Mathf.Sin(phase) * 0.7f + 0.25f * Mathf.Sin(2.3f * phase) + click) * env * 0.9f;
+                float a = Mathf.Clamp01(t / 0.008f);
+                a = a * a * (3f - 2f * a);
+                float env = a * Mathf.Exp(-t / tau) * Mathf.Clamp01((noteLen - t) / 0.02f);
+                float w = 2f * Mathf.PI * freqs[j] * t;
+                data[off + i] = (Mathf.Sin(w) + 0.4f * Mathf.Sin(2f * w) + 0.15f * Mathf.Sin(3f * w)) * 0.6f * env;
             }
+            off += nn + gn;
+            if (j == 1) off += pg;
         }
         var clip = AudioClip.Create(name, data.Length, 1, SampleRate, false);
         clip.SetData(data, 0);

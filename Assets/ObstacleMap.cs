@@ -93,6 +93,9 @@ public class ObstacleMap : MonoBehaviour
     /// <summary>Каждая точка попадания луча в мировых координатах (до фильтра по высоте). Нужна для облака точек.</summary>
     public event System.Action<Vector3> OnDepthHit;
 
+    /// <summary>Мировые точки, которые другие модули просят отметить на минимапе жёлтым (DoorFinder: двери). Заполняющий сам очищает список.</summary>
+    public readonly List<Vector3> mapMarks = new();
+
     const int Layers = 3;
     static readonly float[] LayerTop = { 0.6f, 1.2f, float.MaxValue };
 
@@ -517,6 +520,22 @@ public class ObstacleMap : MonoBehaviour
                     col = IsCellOcc(c) ? occC : IsCellSeen(c) ? freeC : unknown;
                 mapPixels[y * n + x] = col;
             }
+        }
+
+        // метки других модулей (двери от DoorFinder): жёлтые квадраты 5×5
+        var markC = new Color32(255, 220, 0, 255);
+        foreach (var m in mapMarks)
+        {
+            Vector3 off = m - hp;
+            int mx = Mathf.FloorToInt(Vector3.Dot(off, right) / cellSize + half);
+            int my = Mathf.FloorToInt(Vector3.Dot(off, fwd) / cellSize + half);
+            for (int dy = -2; dy <= 2; dy++)
+                for (int dx = -2; dx <= 2; dx++)
+                {
+                    int px = mx + dx, py = my + dy;
+                    if (px < 0 || py < 0 || px >= n || py >= n) continue;
+                    mapPixels[py * n + px] = markC;
+                }
         }
 
         // игрок в центре + метка направления
