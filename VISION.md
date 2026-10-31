@@ -99,6 +99,21 @@ PassthroughCameraAccess (MRUK) ──GetColors()──► PassthroughCameraFeed:
 8. Если текст читается с мусором: поднять `minConfidence` (70) или `confirmScans` (3) в Inspector у объекта `SignReader`.
    Если таблички не находятся: опустить `minConfidence` (50), подойти ближе, проверить освещение.
 
+## Двери по картинке (DoorVision, нейросеть)
+
+Датчик глубины не видит закрытую дверь (она для него стена), поэтому двери ищет ещё и нейросеть по кадру камеры:
+`Assets/Vision/DoorVision.cs` раз в секунду отдаёт кадр passthrough в YOLOv8-детектор дверей
+(`Assets/Vision/Resources/doors.onnx`, обучен на дверях для слепых, пакет **Unity Sentis 2.1.3**, GPU), рамки с уверенностью ≥ 0.5
+и высотой ≥ 18% кадра переводятся в мировую точку лучом через рамку и глубиной, и после 2 обнаружений в одном месте
+(`DoorFinder.ReportVisionDoor`) дверь звучит звонком и голосом, как остальные.
+
+Модель: `doors.pt` из github.com/sayedmohamedscu/YOLOv8-Door-detection-for-visually-impaired-people, экспорт
+`tools/door-model/export_doors.py` (Python + ultralytics: `format=onnx opset=15 imgsz=640`). Выход сети `[1, 5, 8400]`
+(cx, cy, w, h, уверенность). Без файла `Resources/doors.onnx` DoorVision пишет «нет модели» и просто не работает.
+
+Источники дверей теперь три: картинка (закрытые тоже), проём по карте (только открытые), табличка с номером кабинета.
+Двери из модели комнаты (Space Setup) выключены: на шлеме пользователя якорь двери стоял на складе.
+
 ## Журнал для разбора после прогона (VisionLog)
 
 Всё, что видела и решала ветка vision, пишется на шлем в `Android/data/com.anikor.questsonar/files/vision-log/<дата-время>/`

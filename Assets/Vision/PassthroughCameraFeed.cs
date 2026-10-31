@@ -174,10 +174,21 @@ public class PassthroughCameraFeed : MonoBehaviour
         float u = (px + 0.5f) / frame.width;
         float v = (py + 0.5f) / frame.height;
         if (frame.flipped) v = 1f - v;   // viewport Meta: (0,0) внизу слева
-        if (cam == null || !cam.IsPlaying)
-            return new Ray(frame.cameraPose.position, frame.cameraPose.rotation * Vector3.forward);
-        return cam.ViewportPointToRay(new Vector2(u, v), frame.cameraPose);
+        return ViewportToRay(new Vector2(u, v), frame.cameraPose);
     }
+
+    /// <summary>Мировой луч через точку viewport (0..1, (0,0) внизу слева) по заданной позе камеры.</summary>
+    public Ray ViewportToRay(Vector2 viewport, Pose cameraPose)
+    {
+        if (cam == null || !cam.IsPlaying)
+            return new Ray(cameraPose.position, cameraPose.rotation * Vector3.forward);
+        return cam.ViewportPointToRay(viewport, cameraPose);
+    }
+
+    /// <summary>Текущая GPU-текстура камеры (для нейросети) и поза камеры на момент последнего кадра. null, если камера не готова.</summary>
+    public Texture CurrentTexture => IsReady ? cam.GetTexture() : null;
+    public Pose CurrentPose => IsReady ? cam.GetCameraPose() : new Pose(transform.position, transform.rotation);
+    public Vector2Int CurrentResolution => IsReady ? cam.CurrentResolution : Vector2Int.zero;
 
     void OnDestroy()
     {

@@ -244,6 +244,17 @@ public static class VisionCheck
         Check(ex.xMin == 0 && ex.yMin == 0 && ex.xMax == 23 && ex.yMax == 23, $"Expand обрезает по кадру: {ex}");
         Check(OcrImage.Score(new List<OcrWord> { W("АБВ", 90f, 0, 0, 1, 1, 0), W("Г", 30f, 0, 0, 1, 1, 0) }) == 75f, "Score взвешен по длине (90*3+30*1)/4 = 75");
 
+        // ---------------- 3в. DoorVision: подавление дублей рамок
+        var dv = new List<DoorVision.Box>
+        {
+            new DoorVision.Box { x = 300, y = 400, w = 200, h = 500, score = 0.6f },
+            new DoorVision.Box { x = 310, y = 405, w = 210, h = 490, score = 0.9f },   // та же дверь, увереннее
+            new DoorVision.Box { x = 900, y = 400, w = 180, h = 480, score = 0.7f }    // другая дверь
+        };
+        var dvOut = new List<DoorVision.Box>();
+        DoorVision.Nms(dv, 0.5f, dvOut);
+        Check(dvOut.Count == 2 && dvOut[0].score == 0.9f, $"NMS: из 3 рамок осталось {dvOut.Count}, первая {(dvOut.Count > 0 ? dvOut[0].score : 0f):F1} (ожидается 2 и 0.9)");
+
         // ---------------- 4. ToGray с переворотом
         var src = new NativeArray<Color32>(4, Allocator.Temp);
         src[0] = new Color32(255, 0, 0, 255);     // низ слева  -> серый 76

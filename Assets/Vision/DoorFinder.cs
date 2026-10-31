@@ -186,6 +186,7 @@ public class DoorFinder : MonoBehaviour
         foreach (var t in tracks) if (t.reported) map.mapMarks.Add(t.center);
         foreach (var s in sceneDoorCenters) map.mapMarks.Add(s);
         foreach (var s in signDoors) map.mapMarks.Add(s.pos);
+        foreach (var v in visionDoors) if (v.hits >= visionConfirm) map.mapMarks.Add(v.pos);
     }
 
     // ---------------------------------------------------------------- двери по табличкам
@@ -206,6 +207,56 @@ public class DoorFinder : MonoBehaviour
         sd.number = number;
         sd.lastSeen = now;
         SonarLandmarks.Report(SonarLandmarks.MakeId(LandmarkKind.Door, pos, 1.0f), LandmarkKind.Door, pos);
+    }
+
+    /// <summary>Дверь по картинке (нейросеть DoorVision). Положение по глубине или примерное; подтверждение 2 раза за 4 с.</summary>
+    class VisionDoor
+    {
+        public Vector3 pos;
+        public float score;
+        public int hits;
+        public float firstSeen, lastSeen;
+        public bool byDepth;
+        public int key;
+    }
+    readonly List<VisionDoor> visionDoors = new List<VisionDoor>();
+    [Header("Двери по картинке (DoorVision)")]
+    [Tooltip("Сколько раз подряд сеть должна увидеть дверь в одном месте (радиус visionMergeDistance), чтобы она звучала")]
+    public int visionConfirm = 2;
+    public float visionMergeDistance = 1.2f;
+    [Tooltip("Дверь по картинке держится столько секунд после последнего обнаружения")]
+    public float visionHold = 6f;
+    public int visionDoorsCount;
+
+    public void ReportVisionDoor(Vector3 pos, float score, bool byDepth)
+    {
+        float now = Time.time;
+        VisionDoor best = null;
+        float bd = visionMergeDistance * visionMergeDistance;
+        foreach (var v in visionDoors)
+        {
+            float d2 = Flat2(v.pos, pos);
+            if (d2 < bd) { bd = d2; best = v; }
+        }
+        if (best == null)
+        {
+            best = new VisionDoor { pos = pos, firstSeen = now, key = 3000000 + (visionDoors.Count * 7919 + Mathf.RoundToInt(now * 10f)) % 900000 };
+            visionDoors.Add(best);
+        }
+        else
+        {
+            // точка по глубине надёжнее примерной
+            if (byDepth || !best.byDepth) best.pos = Vector3.Lerp(best.pos, pos, byDepth && !best.byDepth ? 1f : 0.5f);
+        }
+        best.byDepth |= byDepth;
+        best.score = Mathf.Max(best.score, score);
+        best.hits++;
+        best.lastSeen = now;
+        if (best.hits == visionConfirm)
+        {
+            VisionLog.Event("vision_door_confirmed", $"\"pos\":{VisionLog.V(best.pos)},\"score\":{VisionLog.F(best.score)},\"byDepth\":{VisionLog.B(best.byDepth)},\"dist\":{VisionLog.F(Mathf.Sqrt(Flat2(best.pos, head.position)))},\"yaw\":{VisionLog.F(YawTo(best.pos))}");
+            SonarLandmarks.Report(SonarLandmarks.MakeId(LandmarkKind.Door, best.pos, 1.0f), LandmarkKind.Door, best.pos);
+        }
     }
 
     /// <summary>Слово «дверь» на языке голоса.</summary>
@@ -231,6 +282,17 @@ public class DoorFinder : MonoBehaviour
             float y = YawTo(s.pos);
             if (d > cueRange || Mathf.Abs(y) > cueYaw || d >= dist) continue;
             center = s.pos; dist = d; yaw = y; key = 2000000 + (s.number.GetHashCode() & 0x7FFFFF);
+        }
+        visionDoors.RemoveAll(v => now - v.lastSeen > visionHold);
+        visionDoorsCount = 0;
+        foreach (var v in visionDoors)
+        {
+            if (v.hits < visionConfirm) continue;
+            visionDoorsCount++;
+            float d = Mathf.Sqrt(Flat2(v.pos, hp));
+            float y = YawTo(v.pos);
+            if (d > cueRange || Mathf.Abs(y) > cueYaw || d >= dist) continue;
+            center = v.pos; dist = d; yaw = y; key = v.key;
         }
         foreach (var t in tracks)
         {
@@ -267,7 +329,8 @@ public class DoorFinder : MonoBehaviour
         }
 
         // дверь по табличке уже названа голосом вместе с текстом таблички («ușă 3-212, …»): только звонок
-        if (doorVoice && key < 2000000 && (!lastVoice.TryGetValue(key, out float tv) || now - tv >= voiceRepeat))
+        bool signDoor = key >= 2000000 && key < 3000000;
+        if (doorVoice && !signDoor && (!lastVoice.TryGetValue(key, out float tv) || now - tv >= voiceRepeat))
         {
             lastVoice[key] = now;
             string phrase = DoorPhrase(yaw);
@@ -564,7 +627,7 @@ public class DoorFinder : MonoBehaviour
             string side = yaw < -10f ? "слева" : yaw > 10f ? "справа" : "прямо";
             status = $"Двери: по карте {mapDoors}, из модели {sceneDoors}; ближайшая {Mathf.Sqrt(bd):F1} м {side}, ширина {nearest.width:F1} м";
         }
-        else status = $"Двери: по карте {mapDoors}, из модели {sceneDoors}, по табличкам {signDoors.Count}, кандидатов {tracks.Count}";
+        else status = $"Двери: по картинке {visionDoorsCount}, по карте {mapDoors}, по табличкам {signDoors.Count}" + (DoorVision.Instance != null ? " | " + DoorVision.Instance.status : "");
     }
 
     void OnDestroy()
